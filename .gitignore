@@ -1,0 +1,58 @@
+# ================= 构建 / 工具链（可重建，勿入库） =================
+.tools/
+third_party/ffmpeg/
+prebuilt/
+dist/
+build-logs/
+.recon/
+
+# build/ 只提交脚本与源码；下面这些是 out-of-tree 中间产物
+build/arm64-v8a/
+build/x86_64/
+build/napi/
+build/toolchain/
+build/build/
+build/device-test/ffmtest
+build/device-test/libc++_shared.so
+build/smoke/*.so
+
+# ================= HarmonyOS / DevEco =================
+harmony/entry/build/
+harmony/.hvigor/
+harmony/entry/.cxx/
+harmony/entry/.preview/
+harmony/oh_modules/
+harmony/entry/oh_modules/
+harmony/local.properties
+harmony/.idea/
+.idea/
+.cxx/
+
+# 预编译的 FFmpeg 库：走 Release 分发，不入库。
+# 想让仓库开箱即编，删掉下面这一行即可。
+harmony/entry/libs/
+
+# ================= 签名与密钥：绝不入库 =================
+*.p12
+*.cer
+*.p7b
+*.p7s
+*.pem
+*.key
+*.jks
+*.keystore
+**/signing/
+**/signature/
+
+# ================= 测试产物（rawfile 里的样例音频要保留） =================
+test/ref/*.pcm
+test/*.m4a
+test/*.flac
+test/*.opus
+*.wav
+harmony/entry/src/main/resources/rawfile/*.pcm
+
+# ================= 杂项 =================
+*.log
+Thumbs.db
+.DS_Store

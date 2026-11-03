@@ -1,0 +1,16 @@
+# 统一换行：仓库里一律 LF，避免 Windows 检出把 .sh 变成 CRLF 跑不起来
+* text=auto eol=lf
+
+*.sh  text eol=lf
+*.py  text eol=lf
+*.ets text eol=lf
+*.c   text eol=lf
+*.cpp text eol=lf
+*.h   text eol=lf
+
+# 二进制
+*.so  binary
+*.png binary
+*.jpg binary
+*.zip binary
+*.hap binary

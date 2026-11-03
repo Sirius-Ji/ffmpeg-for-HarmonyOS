@@ -1,0 +1,11 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "ffmpeg-for-HarmonyOS M1 self-test entry",
+  "main": "",
+  "author": "",
+  "license": "LGPL-2.1-or-later",
+  "dependencies": {
+    "libentry.so": "file:./src/main/cpp/types/libentry"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "app": {
+    // 签名配置故意留空：本机在 DevEco 里自动签名后，IDE 会把证书绝对路径
+    // 和加密后的密码写进这个文件，提交前务必清回 []。
+    "signingConfigs": [],
+    "products": [
+      {
+        "name": "default",
+        "signingConfig": "default",
+        // 版本号格式（DevEco 26 实测）：
+        //   API ≤ 25 写 "6.0.0(20)" 这种带括号的；API ≥ 26 写 "26.0.0"。
+        // 基线钉在 API 20 时改成 "6.0.0(20)" 并装好对应 SDK。
+        "compatibleSdkVersion": "26.0.0",
+        "targetSdkVersion": "26.0.0",
+        "runtimeOS": "HarmonyOS"
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

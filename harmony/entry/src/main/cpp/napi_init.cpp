@@ -1,0 +1,167 @@
+// M1 的 NAPI 层：只做三件事 —— open（拿信息）、read（解封装统计）、decode（落 WAV + 算哈希）。
+// 每个关键步骤都往 HiLog 打一行，tag = FFM1，控制台过滤即可。
+#include <hilog/log.h>
+#include <napi/native_api.h>
+
+#include <cstdio>
+#include <string>
+#include <vector>
+
+#include "decoder.h"
+
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0xFF01
+#define LOG_TAG "FFM1"
+
+namespace {
+
+std::string JsonEscape(const std::string &s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default: out += c;
+        }
+    }
+    return out;
+}
+
+std::string GetString(napi_env env, napi_value value) {
+    size_t len = 0;
+    if (napi_get_value_string_utf8(env, value, nullptr, 0, &len) != napi_ok) return {};
+    std::vector<char> buf(len + 1, 0);
+    if (napi_get_value_string_utf8(env, value, buf.data(), buf.size(), &len) != napi_ok) return {};
+    return std::string(buf.data(), len);
+}
+
+napi_value MakeString(napi_env env, const std::string &s) {
+    napi_value out = nullptr;
+    napi_create_string_utf8(env, s.c_str(), s.size(), &out);
+    return out;
+}
+
+napi_value ErrorJson(napi_env env, const std::string &what) {
+    OH_LOG_ERROR(LOG_APP, "[error] %{public}s", what.c_str());
+    return MakeString(env, "{\"error\":\"" + JsonEscape(what) + "\"}");
+}
+
+// open: 打开文件、建解码器、把流信息打到 HiLog
+napi_value Probe(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 1) return ErrorJson(env, "probe(path): missing path");
+
+    const std::string path = GetString(env, argv[0]);
+    OH_LOG_INFO(LOG_APP, "[open] path=%{public}s", path.c_str());
+
+    AudioDecoder decoder;
+    AudioInfo audioInfo;
+    int ret = decoder.Open(path, &audioInfo);
+    if (ret < 0) return ErrorJson(env, decoder.LastError());
+
+    OH_LOG_INFO(LOG_APP,
+                "[open] format=%{public}s codec=%{public}s rate=%{public}d ch=%{public}d "
+                "duration=%{public}lldms bitrate=%{public}lld",
+                audioInfo.format.c_str(), audioInfo.codec.c_str(), audioInfo.sampleRate,
+                audioInfo.channels, (long long)audioInfo.durationMs, (long long)audioInfo.bitRate);
+    return MakeString(env, decoder.InfoJson(audioInfo));
+}
+
+// read: 只解封装，不解码，统计音频包
+napi_value ReadPackets(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 1) return ErrorJson(env, "readPackets(path): missing path");
+
+    const std::string path = GetString(env, argv[0]);
+    AudioDecoder decoder;
+    AudioInfo audioInfo;
+    int ret = decoder.Open(path, &audioInfo);
+    if (ret < 0) return ErrorJson(env, decoder.LastError());
+
+    ReadStats stats;
+    ret = decoder.ReadPackets(&stats);
+    if (ret < 0) return ErrorJson(env, decoder.LastError());
+
+    OH_LOG_INFO(LOG_APP,
+                "[read] packets=%{public}lld bytes=%{public}lld pts=%{public}lld..%{public}lldms eof=1",
+                (long long)stats.packets, (long long)stats.bytes,
+                (long long)stats.firstPtsMs, (long long)stats.lastPtsMs);
+
+    std::string json = "{\"packets\":" + std::to_string(stats.packets) +
+                       ",\"bytes\":" + std::to_string(stats.bytes) +
+                       ",\"firstPtsMs\":" + std::to_string(stats.firstPtsMs) +
+                       ",\"lastPtsMs\":" + std::to_string(stats.lastPtsMs) + "}";
+    return MakeString(env, json);
+}
+
+// decode: 整文件解成 S16 WAV，并算 FNV-1a 64 供和桌面比对
+napi_value DecodeToWav(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 2) return ErrorJson(env, "decodeToWav(path, wavPath): need 2 args");
+
+    const std::string path = GetString(env, argv[0]);
+    const std::string wavPath = GetString(env, argv[1]);
+
+    AudioDecoder decoder;
+    AudioInfo audioInfo;
+    int ret = decoder.Open(path, &audioInfo);
+    if (ret < 0) return ErrorJson(env, decoder.LastError());
+
+    int64_t frames = 0;
+    int64_t bytes = 0;
+    ret = decoder.DecodeAllToWav(wavPath, &frames, &bytes);
+    if (ret < 0) return ErrorJson(env, decoder.LastError());
+
+    char hashHex[24] = {0};
+    snprintf(hashHex, sizeof(hashHex), "%016llx", (unsigned long long)decoder.LastHash());
+
+    OH_LOG_INFO(LOG_APP,
+                "[decode] codec=%{public}s frames=%{public}lld bytes=%{public}lld hash=%{public}s wav=%{public}s",
+                audioInfo.codec.c_str(), (long long)frames, (long long)bytes, hashHex, wavPath.c_str());
+
+    std::string json = "{\"frames\":" + std::to_string(frames) +
+                       ",\"bytes\":" + std::to_string(bytes) +
+                       ",\"hash\":\"" + std::string(hashHex) + "\"" +
+                       ",\"wav\":\"" + JsonEscape(wavPath) + "\"" +
+                       ",\"codec\":\"" + JsonEscape(audioInfo.codec) + "\"" +
+                       ",\"sampleRate\":" + std::to_string(audioInfo.sampleRate) + "}";
+    return MakeString(env, json);
+}
+
+napi_value Init(napi_env env, napi_value exports) {
+    napi_property_descriptor desc[] = {
+        {"probe", nullptr, Probe, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"readPackets", nullptr, ReadPackets, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"decodeToWav", nullptr, DecodeToWav, nullptr, nullptr, nullptr, napi_default, nullptr},
+    };
+    napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
+    OH_LOG_INFO(LOG_APP, "[init] libentry.so loaded, ffmpeg=%{public}s", "avformat/avcodec/avutil/swresample");
+    return exports;
+}
+
+napi_module g_module = {
+    1,          // nm_version
+    0,          // nm_flags
+    nullptr,    // nm_filename
+    Init,       // nm_register_func
+    "entry",    // nm_modname，必须和 libentry.so 对应
+    nullptr,    // nm_priv
+    {0},        // reserved
+};
+
+}  // namespace
+
+extern "C" __attribute__((constructor)) void RegisterEntryModule(void) {
+    napi_module_register(&g_module);
+}

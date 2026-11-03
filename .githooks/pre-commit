@@ -1,0 +1,15 @@
+#!/bin/sh
+# 提交前拦截：签名材料、本机用户路径
+# 启用方式：git config core.hooksPath .githooks
+set -eu
+
+# 注意：模式串本身写在这个文件里，所以必须把 .githooks 排除掉，否则永远拦自己
+pattern='certpath|storePassword|keyPassword|C:[\\/]Users'
+
+if git grep --cached -n -I -E "$pattern" -- . ':(exclude).githooks' >/tmp/pre-commit-secrets.txt 2>/dev/null; then
+    echo "✖ 检测到签名信息或本机路径，已阻止提交：" >&2
+    cat /tmp/pre-commit-secrets.txt >&2
+    echo "" >&2
+    echo "提示：harmony/build-profile.json5 里的 signingConfigs 应保持 []。" >&2
+    exit 1
+fi
