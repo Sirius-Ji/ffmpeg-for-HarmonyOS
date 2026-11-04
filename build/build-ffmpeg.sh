@@ -89,9 +89,13 @@ build_one() {
     --enable-avformat --enable-avcodec --enable-avutil --enable-swresample --enable-avfilter \
     --enable-ohcodec \
     --enable-decoder=h264_oh,hevc_oh \
-    --enable-decoder=aac,alac,ape,ac3,dca,flac,opus,wmav2 \
-    --enable-parser=aac,ac3,dca,flac,opus \
+    --enable-decoder=aac,alac,ape,ac3,dca,flac,mp3,opus,pcm_s16le,wmav2 \
+    --enable-encoder=aac,flac,pcm_s16le \
+    --enable-parser=aac,ac3,dca,flac,mpegaudio,opus \
     --enable-demuxer=mov,matroska,ogg,flac,ape,dsf,wav,mp3,aac,tta,wv,caf,asf \
+    --enable-muxer=mp4,mov,mp3,flac,wav,matroska \
+    --enable-filter=aresample,aformat,anull,volume \
+    --enable-bsf=aac_adtstoasc \
     --enable-protocol=file \
     $extra \
     > "$LOGS/configure-$abi.log" 2>&1 || {

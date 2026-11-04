@@ -22,14 +22,20 @@
 --disable-everything
 --enable-avformat --enable-avcodec --enable-avutil --enable-swresample --enable-avfilter
 --enable-ohcodec
---enable-decoder=h264_oh,hevc_oh,aac,alac,ape,ac3,dca,flac,opus,wmav2
---enable-parser=aac,ac3,dca,flac,opus
+--enable-decoder=h264_oh,hevc_oh,aac,alac,ape,ac3,dca,flac,mp3,opus,pcm_s16le,wmav2
+--enable-encoder=aac,flac,pcm_s16le
+--enable-parser=aac,ac3,dca,flac,mpegaudio,opus
 --enable-demuxer=mov,matroska,ogg,flac,ape,dsf,wav,mp3,aac,tta,wv,caf,asf
+--enable-muxer=mp4,mov,mp3,flac,wav,matroska
+--enable-filter=aresample,aformat,anull,volume
+--enable-bsf=aac_adtstoasc
 --enable-protocol=file
 --extra-ldflags="-Wl,-z,max-page-size=16384"
 ```
 
 未启用的组件里包含全部 GPL 部分（x264 / x265 / xvid 等）、`--enable-nonfree` 组件（fdk-aac 等）。
+v0.2.0 起增加了基础转码能力（`aac/flac/pcm_s16le` 编码、常用封装器、`aresample/volume` 滤镜），
+**未**启用 MP3 编码（需要 libmp3lame）与任何视频编码。
 
 ## 分发与合规
 

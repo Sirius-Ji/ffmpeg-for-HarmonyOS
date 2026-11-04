@@ -1,8 +1,11 @@
 """生成 Release 资源包：每个 ABI 一个 zip，内含 include/ + .so + 许可证。
 
+打包完成后会调用 build/check-release.py 自动校验（组件 / 包内容 / README 一致性），
+校验失败就删掉本次产物并以非零退出码结束。
+
 用法:
-    python build/make-release.py                 # 默认 n9.0-ohos
-    RELEASE_VERSION=n9.0-ohos-r1 python build/make-release.py
+    python build/make-release.py
+    RELEASE_VERSION=n9.0-ohos python build/make-release.py
 
 产物:
     dist/release/ffmpeg-<version>-<abi>.zip
@@ -11,19 +14,27 @@
 import hashlib
 import os
 import re
+import subprocess
+import sys
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION = os.environ.get("RELEASE_VERSION", "n9.0-ohos")
 OUTDIR = os.path.join(ROOT, "dist", "release")
+CHECKER = os.path.join(ROOT, "build", "check-release.py")
 ABIS = ("arm64-v8a", "x86_64")
 
-# 发布包只带调用方真正需要的四个库；libavfilter 目前没有启用任何 filter，先不发
-LIB_NAMES = ["avcodec", "avformat", "avutil", "swresample"]
-if os.environ.get("INCLUDE_AVFILTER") == "1":
-    LIB_NAMES.append("avfilter")
-
+# v0.2.0 起 avfilter 里真的有 filter 了（aresample/volume/aformat/anull），必须一起发
+LIB_NAMES = ["avcodec", "avformat", "avutil", "swresample", "avfilter"]
 LIB_RE = re.compile(r"^lib(%s)\.so\.(\d+)$" % "|".join(LIB_NAMES))
+
+COMPONENTS = {
+    "decoders": "aac alac ape ac3 dca flac mp3 opus pcm_s16le wmav2 h264_oh hevc_oh",
+    "encoders": "aac flac pcm_s16le",
+    "muxers": "mp4 mov mp3 flac wav matroska",
+    "filters": "aresample aformat anull volume",
+    "notes": "mp3 编码需要 libmp3lame（未编入）；mp3 muxer 仅支持封装/流拷贝",
+}
 
 
 def sha256(path):
@@ -41,8 +52,11 @@ def build_info(abi, lib_files):
         f"abi     : {abi}",
         "target  : aarch64-linux-ohos / x86_64-linux-ohos (musl)",
         "",
-        "files:",
+        "components:",
     ]
+    for key, val in COMPONENTS.items():
+        lines.append(f"  {key:9s}: {val}")
+    lines += ["", "files:"]
     for name, path in sorted(lib_files.items()):
         lines.append(f"  lib/{name}  sha256={sha256(path)}  size={os.path.getsize(path)}")
     lines += [
@@ -58,8 +72,13 @@ def build_info(abi, lib_files):
 
 def main():
     os.makedirs(OUTDIR, exist_ok=True)
-    made = []
 
+    # 清掉旧产物，避免校验时把上一版当成这一版
+    for fn in os.listdir(OUTDIR):
+        if fn.endswith(".zip") or fn == "SHA256SUMS.txt":
+            os.remove(os.path.join(OUTDIR, fn))
+
+    made = []
     for abi in ABIS:
         src = os.path.join(ROOT, "prebuilt", abi)
         if not os.path.isdir(src):
@@ -69,8 +88,7 @@ def main():
         libdir = os.path.join(src, "lib")
         lib_files = {}
         for fn in sorted(os.listdir(libdir)):
-            m = LIB_RE.match(fn)
-            if m and os.path.isfile(os.path.join(libdir, fn)):
+            if LIB_RE.match(fn) and os.path.isfile(os.path.join(libdir, fn)):
                 lib_files[fn] = os.path.join(libdir, fn)
         if not lib_files:
             print(f"skip {abi}: lib 目录里没匹配到 .so")
@@ -91,16 +109,29 @@ def main():
             z.writestr("BUILD-INFO.txt", build_info(abi, lib_files))
 
         made.append((out, os.path.getsize(out)))
-        print(f"{name}: {os.path.getsize(out)/1048576:.2f} MB, "
-              f"{len(lib_files)} libs, {len(os.listdir(os.path.join(src,'lib')))} files in lib/")
+        print(f"{name}: {os.path.getsize(out)/1048576:.2f} MB, {len(lib_files)} libs")
+
+    if not made:
+        print("没有生成任何包")
+        return 1
+
+    # 打包后自动校验；失败就删产物、非零退出
+    print("\n== 运行 check-release.py ==")
+    rc = subprocess.call([sys.executable, CHECKER])
+    if rc != 0:
+        print("\n!! 校验失败，删除本次生成的包")
+        for path, _size in made:
+            os.remove(path)
+        return 1
 
     sums = os.path.join(OUTDIR, "SHA256SUMS.txt")
     with open(sums, "w", encoding="utf-8", newline="\n") as f:
         for path, _size in made:
             f.write(f"{sha256(path)}  {os.path.basename(path)}\n")
-    print("SHA256SUMS:", sums)
+    print("\nSHA256SUMS:", sums)
     print("done.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
