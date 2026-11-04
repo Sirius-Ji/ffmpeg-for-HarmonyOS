@@ -5,6 +5,11 @@
     python build/check-release.py --no-zip   # 只校验编译配置（打包前用）
 
 任何一项对不上都会打印明细并以非零退出码结束，make-release.py 会据此中止打包。
+
+组件判定同时看两处：
+  1. build/<abi>/ffbuild/config.mak 里的 CONFIG_xxx_ENCODER=yes（configure 的最终结果）
+  2. build/<abi>/config_components.h 里的 #define CONFIG_xxx_ENCODER 1
+两处都过才算数——只看其中一处都可能被依赖裁剪骗过。
 """
 import os
 import re
@@ -16,21 +21,25 @@ RELEASE_DIR = os.path.join(ROOT, "dist", "release")
 ABIS = ("arm64-v8a", "x86_64")
 README = os.path.join(ROOT, "README.md")
 
-# 必须编进库里的组件（名字对应 configure 的 --enable-* 参数）
+# v0.1.1 发布能力（与 build/build-ffmpeg.sh 的白名单一致）
 REQUIRED = {
     "decoder": [
-        "aac", "alac", "ape", "ac3", "dca", "flac", "mp3", "opus", "pcm_s16le", "wmav2",
         "h264_oh", "hevc_oh",
+        "aac", "ac3", "alac", "ape", "dca", "flac", "mp3", "mp3float",
+        "opus", "pcm_s16le", "pcm_s24le", "pcm_s32le", "wmav2",
     ],
-    "encoder": ["aac", "flac", "pcm_s16le"],
-    "muxer": ["mp4", "mov", "mp3", "flac", "wav", "matroska"],
+    "encoder": ["aac", "alac", "flac", "pcm_s16le", "pcm_s24le"],
+    "muxer": ["mp4", "mov", "ipod", "mp3", "flac", "wav", "matroska", "adts"],
     "demuxer": ["mov", "matroska", "ogg", "flac", "ape", "dsf", "wav", "mp3", "aac", "tta", "wv", "caf", "asf"],
-    "filter": ["aresample", "aformat", "anull", "volume"],
     "bsf": ["aac_adtstoasc"],
 }
 
-# 发布包必须带的库（去掉 avfilter 就会被这里拦住）
-MUST_SHIP = {"avcodec", "avformat", "avutil", "swresample", "avfilter"}
+# 发布包必须带的库（libavfilter 不发布）
+MUST_SHIP = ("avcodec", "avformat", "avutil", "swresample")
+BANNED_IN_README = ("libavfilter", "avfilter")
+
+TAIL = {"decoder": "DECODER", "encoder": "ENCODER", "muxer": "MUXER",
+        "demuxer": "DEMUXER", "bsf": "BSF"}
 
 
 def read_text(path):
@@ -39,7 +48,6 @@ def read_text(path):
 
 
 def libs_on_disk(abi):
-    """prebuilt/<abi>/lib 下带大版本号的 .so -> {(name, major)}"""
     libdir = os.path.join(ROOT, "prebuilt", abi, "lib")
     out = set()
     if not os.path.isdir(libdir):
@@ -52,23 +60,38 @@ def libs_on_disk(abi):
 
 
 def check_components(abi, failures):
+    mak = os.path.join(ROOT, "build", abi, "ffbuild", "config.mak")
     cc = os.path.join(ROOT, "build", abi, "config_components.h")
     cfg = os.path.join(ROOT, "build", abi, "config.h")
-    if not os.path.exists(cc) or not os.path.exists(cfg):
-        failures.append(f"[{abi}] 找不到编译配置: {cc}（先跑 build/build-ffmpeg.sh）")
-        return
+    for p in (mak, cc, cfg):
+        if not os.path.exists(p):
+            failures.append(f"[{abi}] 找不到编译配置: {p}")
+            return
 
-    text = read_text(cc)
+    mak_text = read_text(mak)
+    cc_text = read_text(cc)
     for kind, names in REQUIRED.items():
+        tail = TAIL[kind]
         for name in names:
-            macro = "CONFIG_%s_%s" % (name.upper(), kind.upper())
-            if not re.search(r"^#define %s 1\b" % macro, text, re.M):
-                failures.append(f"[{abi}] 缺组件: {name} ({kind}) —— {macro} != 1")
+            key = f"CONFIG_{name.upper()}_{tail}"
+            if not re.search(r"^%s=yes\b" % key, mak_text, re.M):
+                failures.append(f"[{abi}] 缺组件: {name} ({kind}) —— config.mak 里 {key} != yes")
+            elif not re.search(r"^#define %s 1\b" % key, cc_text, re.M):
+                failures.append(f"[{abi}] 组件被裁掉: {name} ({kind}) —— {key} 不是 1")
 
     cfg_text = read_text(cfg)
     for flag in ("CONFIG_GPL", "CONFIG_NONFREE", "CONFIG_VERSION3"):
         if not re.search(r"^#define %s 0\b" % flag, cfg_text, re.M):
             failures.append(f"[{abi}] 许可开关异常: {flag} 不是 0")
+
+
+def find_package(abi):
+    if not os.path.isdir(RELEASE_DIR):
+        return None
+    for fn in sorted(os.listdir(RELEASE_DIR)):
+        if fn.endswith(f"-{abi}.zip"):
+            return fn
+    return None
 
 
 def check_zip(abi, failures):
@@ -91,36 +114,28 @@ def check_zip(abi, failures):
         if m:
             packed.add((m.group(1), m.group(2)))
 
-    missing = disk - packed
-    extra = packed - disk
-    if missing:
-        failures.append(f"[{abi}] 包里缺库: {sorted('lib%s.so.%s' % x for x in missing)}")
-    if extra:
-        failures.append(f"[{abi}] 包里有磁盘上不存在的库: {sorted(extra)}")
+    if disk - packed:
+        failures.append(f"[{abi}] 包里缺库: {sorted('lib%s.so.%s' % x for x in disk - packed)}")
+    if packed - disk:
+        failures.append(f"[{abi}] 包里有磁盘上不存在的库: {sorted(packed - disk)}")
 
     for need in MUST_SHIP:
         if not any(n == need for n, _ in disk):
             failures.append(f"[{abi}] 必需库缺失: lib{need}.so.*（未编译出来）")
 
     for hdr in ("include/libavcodec/avcodec.h", "include/libavformat/avformat.h",
-                "include/libavutil/avutil.h", "include/libswresample/swresample.h",
-                "include/libavfilter/avfilter.h"):
+                "include/libavutil/avutil.h", "include/libswresample/swresample.h"):
         if hdr not in names:
             failures.append(f"[{abi}] 包里缺头文件: {hdr}")
 
     for meta in ("NOTICE.md", "LICENSES/LGPL-2.1.txt", "BUILD-INFO.txt"):
         if meta not in names:
             failures.append(f"[{abi}] 包里缺: {meta}")
+
+    standalone = os.path.join(RELEASE_DIR, f"BUILD-INFO-{abi}.txt")
+    if not os.path.exists(standalone):
+        failures.append(f"[{abi}] 缺独立附件: BUILD-INFO-{abi}.txt")
     return name, packed
-
-
-def find_package(abi):
-    if not os.path.isdir(RELEASE_DIR):
-        return None
-    for fn in sorted(os.listdir(RELEASE_DIR)):
-        if fn.endswith(f"-{abi}.zip"):
-            return fn
-    return None
 
 
 def check_readme(failures, packages, libs_by_abi):
@@ -129,20 +144,22 @@ def check_readme(failures, packages, libs_by_abi):
         return
     text = read_text(README)
 
-    # 1) README 里出现的 .so 集合必须和实际发布的一致
     mentioned = set((m.group(1), m.group(2)) for m in re.finditer(r"lib(\w+)\.so\.(\d+)", text))
     actual = set()
     for libs in libs_by_abi.values():
         actual |= libs
     if actual:
-        missing = actual - mentioned
-        stale = mentioned - actual
-        if missing:
-            failures.append("README 未提到实际发布的库: " + str(sorted('lib%s.so.%s' % x for x in missing)))
-        if stale:
-            failures.append("README 提到的库不在产物里: " + str(sorted('lib%s.so.%s' % x for x in stale)))
+        if actual - mentioned:
+            failures.append("README 未提到实际发布的库: " + str(sorted('lib%s.so.%s' % x for x in actual - mentioned)))
+        if mentioned - actual:
+            failures.append("README 提到的库不在产物里: " + str(sorted('lib%s.so.%s' % x for x in mentioned - actual)))
+        if len(mentioned) != len(MUST_SHIP):
+            failures.append(f"README 里 .so 数量不对: 提到 {len(mentioned)} 个，应发布 {len(MUST_SHIP)} 个")
 
-    # 2) 每个 Release 包名都要在 README 里出现
+    for banned in BANNED_IN_README:
+        if banned in text:
+            failures.append(f"README 仍提到已不发布的库名: {banned}")
+
     for pkg in packages:
         if pkg and pkg not in text:
             failures.append(f"README 未提到发布包名: {pkg}")
@@ -157,7 +174,7 @@ def main():
     for abi in ABIS:
         check_components(abi, failures)
         if no_zip:
-            libs_by_abi[abi] = libs_on_disk(abi)
+            libs_by_abi[abi] = {x for x in libs_on_disk(abi) if x[0] in MUST_SHIP}
         else:
             pkg, libs = check_zip(abi, failures)
             packages.append(pkg)
@@ -168,10 +185,10 @@ def main():
         check_readme(failures, packages, libs_by_abi)
 
     print("== 检查项 ==")
-    print(f"   ABI          : {', '.join(ABIS)}")
-    print(f"   组件白名单   : " + ", ".join(f"{k}={len(v)}" for k, v in REQUIRED.items()))
-    print(f"   发布库       : " + ", ".join(sorted(MUST_SHIP)))
-    print(f"   检查压缩包   : {'否' if no_zip else '是'}")
+    print(f"   ABI        : {', '.join(ABIS)}")
+    print("   组件白名单 : " + ", ".join(f"{k}={len(v)}" for k, v in REQUIRED.items()))
+    print(f"   发布库     : {', '.join(MUST_SHIP)}")
+    print(f"   检查压缩包 : {'否' if no_zip else '是'}")
 
     if failures:
         print("\n!! 校验失败：")
@@ -179,7 +196,7 @@ def main():
             print("  -", f)
         return 1
 
-    print("\nOK：组件、压缩包与 README 一致")
+    print("\nOK: 组件、压缩包与 README 一致")
     return 0
 
 

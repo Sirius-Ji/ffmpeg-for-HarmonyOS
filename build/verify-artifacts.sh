@@ -12,7 +12,7 @@ for abi in arm64-v8a x86_64; do
   libdir="$OUT/$abi/lib"
   [ -d "$libdir" ] || continue
   echo "================ $abi ================"
-  for f in "$libdir"/lib{avformat,avcodec,avutil,swresample,avfilter}.so.[0-9]* ; do
+  for f in "$libdir"/lib{avformat,avcodec,avutil,swresample}.so.[0-9]* ; do
     [ -e "$f" ] || continue
     base=$(basename "$f")
     machine=$("$LLVM/llvm-readelf.exe" -h "$f" | sed -n 's/^ *Machine: *//p')

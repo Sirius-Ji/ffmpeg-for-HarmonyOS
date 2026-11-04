@@ -41,14 +41,13 @@ cd <repo>
 --disable-programs --disable-doc --disable-avdevice --disable-swscale
 --disable-network --disable-iconv --disable-autodetect --disable-vulkan
 --disable-everything
---enable-avformat --enable-avcodec --enable-avutil --enable-swresample --enable-avfilter
+--enable-avformat --enable-avcodec --enable-avutil --enable-swresample
 --enable-ohcodec
---enable-decoder=h264_oh,hevc_oh,aac,alac,ape,ac3,dca,flac,mp3,opus,pcm_s16le,wmav2
---enable-encoder=aac,flac,pcm_s16le
+--enable-decoder=h264_oh,hevc_oh,aac,ac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2
+--enable-encoder=aac,alac,flac,pcm_s16le,pcm_s24le
 --enable-parser=aac,ac3,dca,flac,mpegaudio,opus
 --enable-demuxer=mov,matroska,ogg,flac,ape,dsf,wav,mp3,aac,tta,wv,caf,asf
---enable-muxer=mp4,mov,mp3,flac,wav,matroska
---enable-filter=aresample,aformat,anull,volume
+--enable-muxer=mp4,mov,ipod,mp3,flac,wav,matroska,adts
 --enable-bsf=aac_adtstoasc
 --enable-protocol=file
 ```
@@ -94,7 +93,7 @@ msys 的 `gcc` 包在本机 **反复在 `gcc.exe` 这一个文件名上解包失
 | configure 耗时 | ≈ 11 分钟（MSYS 下每个探测都要 fork 一次，比 Linux 慢一个数量级） |
 | make -j24 耗时 | ≈ 4 分钟，290 个 .o |
 | 产物 | `prebuilt/arm64-v8a/lib/` + `include/`（含 `libavutil/hwcontext_oh.h`） |
-| 体积 | libavutil 671 KB、libavformat 537 KB、libavcodec 1081 KB、libswresample 90 KB、libavfilter 123 KB（第二轮加了软解白名单，libavcodec 从 371 KB 涨到 1081 KB） |
+| 体积 | libavutil 671 KB、libavformat 537 KB、libavcodec 1081 KB、libswresample 90 KB、libavfilter 123 KB（第二轮加了软解白名单，libavcodec 从 371 KB 涨到 1081 KB）；v0.1.1 起不再编译 libavfilter |
 | 页对齐 | `PT_LOAD Align = 0x4000`（16 KB，`--extra-ldflags="-Wl,-z,max-page-size=16384"` 生效） |
 | 软解白名单 | aac / alac / ape / ac3 / dca(DTS) / flac / opus / wmav2 + 对应 parser |
 | SONAME | 有：`libavcodec.so.63` / `libavformat.so.63` / `libavutil.so.61` / `libswresample.so.7` |

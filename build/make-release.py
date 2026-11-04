@@ -9,6 +9,7 @@
 
 产物:
     dist/release/ffmpeg-<version>-<abi>.zip
+    dist/release/BUILD-INFO-<abi>.txt     # 独立附件（同时也在 zip 内）
     dist/release/SHA256SUMS.txt
 """
 import hashlib
@@ -24,16 +25,16 @@ OUTDIR = os.path.join(ROOT, "dist", "release")
 CHECKER = os.path.join(ROOT, "build", "check-release.py")
 ABIS = ("arm64-v8a", "x86_64")
 
-# v0.2.0 起 avfilter 里真的有 filter 了（aresample/volume/aformat/anull），必须一起发
-LIB_NAMES = ["avcodec", "avformat", "avutil", "swresample", "avfilter"]
+# v0.1.1：libavfilter 不随包发布（滤镜开关仍在编译里，但不作为发布能力）
+LIB_NAMES = ["avcodec", "avformat", "avutil", "swresample"]
 LIB_RE = re.compile(r"^lib(%s)\.so\.(\d+)$" % "|".join(LIB_NAMES))
 
 COMPONENTS = {
-    "decoders": "aac alac ape ac3 dca flac mp3 opus pcm_s16le wmav2 h264_oh hevc_oh",
-    "encoders": "aac flac pcm_s16le",
-    "muxers": "mp4 mov mp3 flac wav matroska",
-    "filters": "aresample aformat anull volume",
-    "notes": "mp3 编码需要 libmp3lame（未编入）；mp3 muxer 仅支持封装/流拷贝",
+    "decoders": "aac ac3 alac ape dca flac mp3 mp3float opus pcm_s16le pcm_s24le pcm_s32le wmav2 h264_oh hevc_oh",
+    "encoders": "aac alac flac pcm_s16le pcm_s24le",
+    "muxers": "mp4 mov ipod mp3 flac wav matroska adts",
+    "parsers": "aac ac3 dca flac mpegaudio opus",
+    "notes": "不包含 MP3 编码（未编入 libmp3lame）；MP3 仅支持解码与封装",
 }
 
 
@@ -75,10 +76,11 @@ def main():
 
     # 清掉旧产物，避免校验时把上一版当成这一版
     for fn in os.listdir(OUTDIR):
-        if fn.endswith(".zip") or fn == "SHA256SUMS.txt":
+        if fn.endswith(".zip") or fn == "SHA256SUMS.txt" or fn.startswith("BUILD-INFO"):
             os.remove(os.path.join(OUTDIR, fn))
 
     made = []
+    infos = {}
     for abi in ABIS:
         src = os.path.join(ROOT, "prebuilt", abi)
         if not os.path.isdir(src):
@@ -109,19 +111,29 @@ def main():
             z.writestr("BUILD-INFO.txt", build_info(abi, lib_files))
 
         made.append((out, os.path.getsize(out)))
+        infos[abi] = lib_files
         print(f"{name}: {os.path.getsize(out)/1048576:.2f} MB, {len(lib_files)} libs")
 
     if not made:
         print("没有生成任何包")
         return 1
 
+    # BUILD-INFO 单独抽出来当 Release 独立附件
+    for abi, lib_files in infos.items():
+        p = os.path.join(OUTDIR, f"BUILD-INFO-{abi}.txt")
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
+            f.write(build_info(abi, lib_files))
+        made.append((p, os.path.getsize(p)))
+        print(f"BUILD-INFO-{abi}.txt: {os.path.getsize(p)} B")
+
     # 打包后自动校验；失败就删产物、非零退出
     print("\n== 运行 check-release.py ==")
     rc = subprocess.call([sys.executable, CHECKER])
     if rc != 0:
-        print("\n!! 校验失败，删除本次生成的包")
+        print("\n!! 校验失败，删除本次生成的产物")
         for path, _size in made:
-            os.remove(path)
+            if os.path.exists(path):
+                os.remove(path)
         return 1
 
     sums = os.path.join(OUTDIR, "SHA256SUMS.txt")

@@ -20,22 +20,24 @@
 --disable-programs --disable-doc --disable-avdevice --disable-swscale
 --disable-network --disable-iconv --disable-autodetect --disable-vulkan
 --disable-everything
---enable-avformat --enable-avcodec --enable-avutil --enable-swresample --enable-avfilter
+--enable-avformat --enable-avcodec --enable-avutil --enable-swresample
 --enable-ohcodec
---enable-decoder=h264_oh,hevc_oh,aac,alac,ape,ac3,dca,flac,mp3,opus,pcm_s16le,wmav2
---enable-encoder=aac,flac,pcm_s16le
+--enable-decoder=h264_oh,hevc_oh,aac,ac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2
+--enable-encoder=aac,alac,flac,pcm_s16le,pcm_s24le
 --enable-parser=aac,ac3,dca,flac,mpegaudio,opus
 --enable-demuxer=mov,matroska,ogg,flac,ape,dsf,wav,mp3,aac,tta,wv,caf,asf
---enable-muxer=mp4,mov,mp3,flac,wav,matroska
---enable-filter=aresample,aformat,anull,volume
+--enable-muxer=mp4,mov,ipod,mp3,flac,wav,matroska,adts
 --enable-bsf=aac_adtstoasc
 --enable-protocol=file
 --extra-ldflags="-Wl,-z,max-page-size=16384"
 ```
 
 未启用的组件里包含全部 GPL 部分（x264 / x265 / xvid 等）、`--enable-nonfree` 组件（fdk-aac 等）。
-v0.2.0 起增加了基础转码能力（`aac/flac/pcm_s16le` 编码、常用封装器、`aresample/volume` 滤镜），
+v0.1.1 起增加了基础转码能力（`aac/alac/flac/pcm_s16le/pcm_s24le` 编码、常用封装器），
 **未**启用 MP3 编码（需要 libmp3lame）与任何视频编码。
+
+发布包只带 4 个库：`libavcodec.so.63`、`libavformat.so.63`、`libavutil.so.61`、`libswresample.so.7`。
+构建不包含 `libavfilter`：本版本不提供滤镜能力。
 
 ## 分发与合规
 

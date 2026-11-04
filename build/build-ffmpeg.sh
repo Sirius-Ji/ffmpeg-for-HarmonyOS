@@ -82,19 +82,17 @@ build_one() {
     --extra-ldflags="-Wl,-z,max-page-size=16384" \
     --prefix="$OUT/$abi" \
     --enable-shared --disable-static \
-    --disable-programs --disable-doc --disable-avdevice \
+    --disable-programs --disable-doc --disable-avdevice --disable-avfilter \
     --disable-swscale --disable-network --disable-iconv --disable-autodetect \
     --disable-vulkan \
     --disable-everything \
-    --enable-avformat --enable-avcodec --enable-avutil --enable-swresample --enable-avfilter \
+    --enable-avformat --enable-avcodec --enable-avutil --enable-swresample \
     --enable-ohcodec \
-    --enable-decoder=h264_oh,hevc_oh \
-    --enable-decoder=aac,alac,ape,ac3,dca,flac,mp3,opus,pcm_s16le,wmav2 \
-    --enable-encoder=aac,flac,pcm_s16le \
+    --enable-decoder=h264_oh,hevc_oh,aac,ac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2 \
+    --enable-encoder=aac,alac,flac,pcm_s16le,pcm_s24le \
     --enable-parser=aac,ac3,dca,flac,mpegaudio,opus \
     --enable-demuxer=mov,matroska,ogg,flac,ape,dsf,wav,mp3,aac,tta,wv,caf,asf \
-    --enable-muxer=mp4,mov,mp3,flac,wav,matroska \
-    --enable-filter=aresample,aformat,anull,volume \
+    --enable-muxer=mp4,mov,ipod,mp3,flac,wav,matroska,adts \
     --enable-bsf=aac_adtstoasc \
     --enable-protocol=file \
     $extra \
