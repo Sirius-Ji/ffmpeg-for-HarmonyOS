@@ -167,8 +167,26 @@ napi_value PlayerOpen(napi_env env, napi_callback_info info) {
     return MakeString(env, player->StatusJson());
 }
 
-napi_value PlayerPlay(napi_env env, napi_callback_info /*info*/) {
+// 用 fd 打开：ArkTS 侧 picker 拿到 URI → fs.openSync(uri) → 把 fd 传进来
+napi_value PlayerOpenFd(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 1) return ErrorJson(env, "playerOpenFd(fd): missing fd");
+
+    int32_t fd = -1;
+    if (napi_get_value_int32(env, argv[0], &fd) != napi_ok || fd < 0) {
+        return ErrorJson(env, "playerOpenFd(fd): invalid fd");
+    }
+
     AudioPlayer *player = EnsurePlayer();
+    if (player->OpenFd(fd) != 0) return ErrorJson(env, player->LastError());
+
+    OH_LOG_INFO(LOG_APP, "[player] open via fd %{public}d", fd);
+    return MakeString(env, player->StatusJson());
+}
+
+napi_value PlayerPlay(napi_env env, napi_callback_info /*info*/) {    AudioPlayer *player = EnsurePlayer();
     if (player->Play() != 0) return ErrorJson(env, player->LastError());
     OH_LOG_INFO(LOG_APP, "[player] play");
     return MakeString(env, player->StatusJson());
@@ -208,6 +226,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"readPackets", nullptr, ReadPackets, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"decodeToWav", nullptr, DecodeToWav, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"playerOpen", nullptr, PlayerOpen, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"playerOpenFd", nullptr, PlayerOpenFd, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"playerPlay", nullptr, PlayerPlay, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"playerPause", nullptr, PlayerPause, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"playerStop", nullptr, PlayerStop, nullptr, nullptr, nullptr, napi_default, nullptr},

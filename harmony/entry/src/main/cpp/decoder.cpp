@@ -1,10 +1,13 @@
 #include "decoder.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
 #include <vector>
+
+#include <unistd.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -66,6 +69,37 @@ std::string AvErr(int err) {
     return std::string(buf);
 }
 
+// —— fd 直读用的 AVIO 回调（picker 选出的 URI 转 fd 后走这条路，不复制文件）——
+int FdReadPacket(void *opaque, uint8_t *buf, int size) {
+    const int fd = (int)(intptr_t)opaque;
+    for (;;) {
+        const ssize_t n = ::read(fd, buf, (size_t)size);
+        if (n >= 0) return (int)n;
+        if (errno != EINTR) return AVERROR(errno);
+    }
+}
+
+int64_t FdSeek(void *opaque, int64_t offset, int whence) {
+    const int fd = (int)(intptr_t)opaque;
+    if (whence == AVSEEK_SIZE) {
+        const off_t cur = ::lseek(fd, 0, SEEK_CUR);
+        const off_t end = ::lseek(fd, 0, SEEK_END);
+        if (cur >= 0) ::lseek(fd, cur, SEEK_SET);
+        return end;
+    }
+    whence &= ~AVSEEK_FORCE;
+    int w = SEEK_SET;
+    if (whence == SEEK_CUR) {
+        w = SEEK_CUR;
+    } else if (whence == SEEK_END) {
+        w = SEEK_END;
+    } else if (whence != SEEK_SET) {
+        return AVERROR(EINVAL);
+    }
+    const off_t r = ::lseek(fd, (off_t)offset, w);
+    return r < 0 ? AVERROR(errno) : (int64_t)r;
+}
+
 }  // namespace
 
 AudioDecoder::AudioDecoder() = default;
@@ -81,6 +115,16 @@ void AudioDecoder::Close() {
     if (packet_) { av_packet_free((AVPacket **)&packet_); packet_ = nullptr; }
     if (dec_) { avcodec_free_context((AVCodecContext **)&dec_); dec_ = nullptr; }
     if (fmt_) { avformat_close_input((AVFormatContext **)&fmt_); fmt_ = nullptr; }
+    if (avio_) {
+        AVIOContext *pb = (AVIOContext *)avio_;
+        av_freep(&pb->buffer);
+        avio_context_free(&pb);
+        avio_ = nullptr;
+    }
+    if (fd_ >= 0) {
+        ::close(fd_);
+        fd_ = -1;
+    }
     pending_.clear();
     pendingPos_ = 0;
     flushSent_ = false;
@@ -101,8 +145,56 @@ int AudioDecoder::Open(const std::string &path, AudioInfo *info) {
         return ret;
     }
     fmt_ = fmt;
+    return FinishOpen(info);
+}
 
-    ret = avformat_find_stream_info(fmt, nullptr);
+int AudioDecoder::OpenFd(int fd, AudioInfo *info) {
+    Close();
+    err_.clear();
+
+    fd_ = ::dup(fd);
+    if (fd_ < 0) {
+        SetError("dup(fd) failed");
+        return AVERROR(errno);
+    }
+
+    constexpr int kIoBuf = 64 * 1024;
+    auto *iobuf = static_cast<unsigned char *>(av_malloc(kIoBuf));
+    if (iobuf == nullptr) {
+        SetError("av_malloc(io buffer) failed");
+        return AVERROR(ENOMEM);
+    }
+    AVIOContext *avio = avio_alloc_context(iobuf, kIoBuf, 0, (void *)(intptr_t)fd_,
+                                          FdReadPacket, nullptr, FdSeek);
+    if (avio == nullptr) {
+        av_free(iobuf);
+        SetError("avio_alloc_context failed");
+        return AVERROR(ENOMEM);
+    }
+    avio_ = avio;
+
+    AVFormatContext *fmt = avformat_alloc_context();
+    if (fmt == nullptr) {
+        SetError("avformat_alloc_context failed");
+        return AVERROR(ENOMEM);
+    }
+    fmt->pb = avio;
+    fmt->flags |= AVFMT_FLAG_CUSTOM_IO;
+
+    fmt_ = fmt;
+    const int ret = avformat_open_input(&fmt, nullptr, nullptr, nullptr);
+    if (ret < 0) {
+        fmt_ = nullptr;
+        SetError("avformat_open_input(fd): " + AvErr(ret));
+        return ret;
+    }
+    fmt_ = fmt;
+    return FinishOpen(info);
+}
+
+int AudioDecoder::FinishOpen(AudioInfo *info) {
+    AVFormatContext *fmt = (AVFormatContext *)fmt_;
+    int ret = avformat_find_stream_info(fmt, nullptr);
     if (ret < 0) {
         SetError("avformat_find_stream_info: " + AvErr(ret));
         return ret;

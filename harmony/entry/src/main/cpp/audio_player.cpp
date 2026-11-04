@@ -6,6 +6,9 @@
 #include <cstring>
 #include <sstream>
 
+#include <sys/resource.h>
+#include <unistd.h>
+
 #include <hilog/log.h>
 
 extern "C" {
@@ -37,6 +40,33 @@ const char *StateName(int state) {
         case 3: return "stopped";
         default: return "idle";
     }
+}
+
+int64_t NowUs() {
+    return (int64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// 进程累计 CPU 时间（用户态 + 内核态），单位微秒
+int64_t CpuUs() {
+    struct rusage ru {};
+    if (getrusage(RUSAGE_SELF, &ru) != 0) return 0;
+    return (int64_t)ru.ru_utime.tv_sec * 1000000 + ru.ru_utime.tv_usec +
+           (int64_t)ru.ru_stime.tv_sec * 1000000 + ru.ru_stime.tv_usec;
+}
+
+// 当前进程常驻内存（KB），读不到返回 -1
+long long RssKb() {
+    FILE *f = fopen("/proc/self/statm", "r");
+    if (f == nullptr) return -1;
+    long totalPages = 0;
+    long residentPages = 0;
+    const int n = fscanf(f, "%ld %ld", &totalPages, &residentPages);
+    fclose(f);
+    if (n != 2) return -1;
+    const long pageSize = sysconf(_SC_PAGESIZE);
+    return (long long)residentPages * pageSize / 1024;
 }
 
 }  // namespace
@@ -191,13 +221,21 @@ int AudioPlayer::FillAudio(uint8_t *buf, int32_t size) {
 void AudioPlayer::DecodeLoop() {
     std::vector<uint8_t> chunk;
     int64_t written = 0;
+    lastPerfUs_ = NowUs();
+    lastCpuUs_ = CpuUs();
+
     while (running_.load()) {
         // 尽量把 ring 填满（留 4KB 余量），而不是等掉到某条水位线以下才动
         if (RingUsed() + 4096 >= ring_.size()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
+        const int64_t t0 = NowUs();
         int ret = decoder_->ReadPcm(chunk, kChunkFrames, kOutRate, kOutChannels);
+        const int64_t t1 = NowUs();
+        decodeUs_.fetch_add((uint64_t)(t1 - t0));
+        decodeCalls_.fetch_add(1);
+
         if (ret == AVERROR_EOF) {
             decoderEof_.store(true);
             break;
@@ -208,6 +246,8 @@ void AudioPlayer::DecodeLoop() {
             break;
         }
         if (chunk.empty()) continue;
+        framesDecoded_.fetch_add((int64_t)(chunk.size() / (2 * kOutChannels)));
+
         size_t off = 0;
         while (off < chunk.size() && running_.load()) {
             off += RingWrite(chunk.data() + off, chunk.size() - off);
@@ -216,6 +256,28 @@ void AudioPlayer::DecodeLoop() {
             }
         }
         written += (int64_t)chunk.size();
+
+        // 每 2 秒打一行性能日志：平均解码耗时、进程 CPU、RSS、ring 水位
+        if (t1 - lastPerfUs_ >= 2000000) {
+            const int64_t cpu = CpuUs();
+            const int64_t wallUs = t1 - lastPerfUs_;
+            const int64_t cpuUs = cpu - lastCpuUs_;
+            const int pct = wallUs > 0 ? (int)(cpuUs * 100 / wallUs) : 0;
+            cpuPercent_.store(pct);
+            rssKb_.store(RssKb());
+            lastPerfUs_ = t1;
+            lastCpuUs_ = cpu;
+
+            const uint64_t calls = decodeCalls_.load();
+            const int64_t frames = framesDecoded_.load();
+            const double avgUs = frames > 0 ? (double)decodeUs_.load() / (double)frames : 0.0;
+            char line[220];
+            snprintf(line, sizeof(line),
+                     "decode_avg=%.3fms/frame calls=%llu cpu=%d%% rss=%lldKB ring=%dKB written=%lldKB",
+                     avgUs / 1000.0, (unsigned long long)calls, pct, rssKb_.load(),
+                     (int)(RingUsed() / 1024), (long long)(written / 1024));
+            OH_LOG_INFO(LOG_APP, "[player] perf %{public}s", line);
+        }
     }
     OH_LOG_INFO(LOG_APP, "[player] decode loop end, pcm=%{public}lld bytes, eof=%{public}d",
                 (long long)written, decoderEof_.load() ? 1 : 0);
@@ -332,14 +394,50 @@ int AudioPlayer::Open(const std::string &path) {
     return 0;
 }
 
+int AudioPlayer::OpenFd(int fd) {
+    // 先复制一份再 Release：重播时传进来的 fd 可能正是 srcFd_ 自己
+    const int keep = ::dup(fd);
+    if (keep < 0) {
+        SetError("dup(fd) failed");
+        return -1;
+    }
+    Release();
+    srcFd_ = keep;
+    path_ = "fd://" + std::to_string(fd);
+
+    decoder_.reset(new AudioDecoder());
+    AudioInfo info;
+    if (decoder_->OpenFd(srcFd_, &info) < 0) {
+        SetError(decoder_->LastError());
+        decoder_.reset();
+        return -1;
+    }
+    codec_ = info.codec;
+    durationMs_ = info.durationMs;
+    srcRate_ = info.sampleRate;
+    srcChannels_ = info.channels;
+
+    // fd 来源不做 selfcheck：几十 MB 的曲目没必要解两遍
+    if (BuildRenderer() != 0) return -1;
+
+    OH_LOG_INFO(LOG_APP,
+                "[player] open fd ok codec=%{public}s duration=%{public}lldms src=%{public}d/%{public}d",
+                codec_.c_str(), (long long)durationMs_, srcRate_, srcChannels_);
+    return 0;
+}
+
 int AudioPlayer::Play() {
     if (path_.empty()) {
         SetError("player: no file opened");
         return -1;
     }
     if (state_.load() == 3 || (decoderEof_.load() && RingUsed() == 0)) {
-        const std::string path = path_;
-        if (Open(path) != 0) return -1;
+        if (srcFd_ >= 0) {
+            if (OpenFd(srcFd_) != 0) return -1;
+        } else {
+            const std::string path = path_;
+            if (Open(path) != 0) return -1;
+        }
     }
     if (renderer_ == nullptr && BuildRenderer() != 0) return -1;
 
@@ -359,6 +457,11 @@ int AudioPlayer::Play() {
     callbackCount_.store(0);
     realBytes_.store(0);
     maxCallbackBytes_.store(0);
+    decodeUs_.store(0);
+    decodeCalls_.store(0);
+    framesDecoded_.store(0);
+    cpuPercent_.store(0);
+    rssKb_.store(0);
 
     // 先起解码线程，让 ring 预填 200ms 再开渲染器 —— 否则启动阶段必然欠载
     running_.store(true);
@@ -406,6 +509,10 @@ int AudioPlayer::Stop() {
     callbackCount_.store(0);
     realBytes_.store(0);
     maxCallbackBytes_.store(0);
+    decodeUs_.store(0);
+    decodeCalls_.store(0);
+    framesDecoded_.store(0);
+    cpuPercent_.store(0);
     state_.store(3);
     return 0;
 }
@@ -420,6 +527,10 @@ void AudioPlayer::Release() {
     }
     RingClear();
     decoder_.reset();
+    if (srcFd_ >= 0) {
+        ::close(srcFd_);
+        srcFd_ = -1;
+    }
     decoderEof_.store(false);
     gotFirstData_.store(false);
     gaps_.store(0);
@@ -455,6 +566,10 @@ std::string AudioPlayer::StatusJson() const {
 
     const bool finished = decoderEof_.load() && RingUsed() == 0;
 
+    const uint64_t calls = decodeCalls_.load();
+    const int64_t decodedFrames = framesDecoded_.load();
+    const double avgUsPerFrame = decodedFrames > 0 ? (double)decodeUs_.load() / (double)decodedFrames : 0.0;
+
     std::ostringstream os;
     os << "{\"state\":\"" << StateName(state_.load()) << "\""
        << ",\"positionMs\":" << positionMs
@@ -465,6 +580,10 @@ std::string AudioPlayer::StatusJson() const {
        << ",\"gaps\":" << gaps_.load()
        << ",\"callbacks\":" << callbackCount_.load()
        << ",\"maxCallbackBytes\":" << maxCallbackBytes_.load()
+       << ",\"decodeAvgUs\":" << (int64_t)avgUsPerFrame
+       << ",\"decodeCalls\":" << calls
+       << ",\"cpuPercent\":" << cpuPercent_.load()
+       << ",\"rssKb\":" << rssKb_.load()
        << ",\"rendererRate\":" << rendererRate_
        << ",\"rendererChannels\":" << rendererChannels_
        << ",\"rendererFrameSize\":" << rendererFrameSize_

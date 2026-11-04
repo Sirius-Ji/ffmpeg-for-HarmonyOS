@@ -5,6 +5,7 @@ declare const native: {
   decodeToWav: (path: string, wavPath: string) => string;
   // M2：播放器（单实例）
   playerOpen: (path: string) => string;
+  playerOpenFd: (fd: number) => string;
   playerPlay: () => string;
   playerPause: () => string;
   playerStop: () => string;

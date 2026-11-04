@@ -1,4 +1,4 @@
-import { fileIo as fs } from '@kit.CoreFileKit';
+import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
 // NAPI 模块：libentry.so，C 侧 nm_modname = "entry"
 import native from 'libentry.so';
@@ -31,6 +31,11 @@ struct Index {
             this.onStop();
           })
       }
+
+      Button('选歌播放（系统文件选择器）')
+        .onClick(() => {
+          this.pickAndPlay();
+        })
 
       Text(this.status)
         .fontSize(12)
@@ -88,6 +93,38 @@ struct Index {
     try {
       this.stopPolling();
       this.status = native.playerStop();
+    } catch (e) {
+      this.status = `异常: ${JSON.stringify(e)}`;
+    }
+  }
+
+  // 系统文件选择器 → URI → fd → native（不复制文件，直接读原文件）
+  async pickAndPlay(): Promise<void> {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const documentPicker = new picker.DocumentViewPicker(ctx);
+      const options = new picker.DocumentSelectOptions();
+      options.maxSelectNumber = 1;
+      const uris: string[] = await documentPicker.select(options);
+      if (uris.length === 0) {
+        this.status = '没有选择文件';
+        return;
+      }
+      const uri = uris[0];
+      const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+      let openRes: string = '';
+      try {
+        openRes = native.playerOpenFd(file.fd);
+      } finally {
+        fs.closeSync(file);
+      }
+      if (openRes.includes('"error"')) {
+        this.status = `打开失败: ${openRes}`;
+        return;
+      }
+      const playRes: string = native.playerPlay();
+      this.status = `file: ${uri}\nopen: ${openRes}\nplay: ${playRes}`;
+      this.startPolling();
     } catch (e) {
       this.status = `异常: ${JSON.stringify(e)}`;
     }

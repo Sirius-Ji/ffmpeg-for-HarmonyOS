@@ -35,6 +35,10 @@ public:
     // 打开文件并建立解码器；成功返回 0
     int Open(const std::string &path, AudioInfo *info);
 
+    // 用已打开的 fd 打开（picker 选出的文件是 URI，转成 fd 后走这里，不用复制文件）。
+    // 内部会 dup 一份，调用方可以立刻 close 自己的 fd。
+    int OpenFd(int fd, AudioInfo *info);
+
     // 整文件解到 16-bit PCM WAV（用于和桌面 ffmpeg 对拍）
     int DecodeAllToWav(const std::string &outPath, int64_t *framesOut, int64_t *bytesOut);
 
@@ -58,6 +62,8 @@ public:
 private:
     int DrainDecoder(void *wav);
     void SetError(const std::string &what);
+    // Open / OpenFd 共用：找流、建解码器、填 info
+    int FinishOpen(AudioInfo *info);
 
     // 流式路径：把下一帧（或 swr 残留）转换进 pending_，供 ReadPcm 取用
     int StreamFillPending(int outRate, int outChannels);
@@ -68,6 +74,8 @@ private:
     void *packet_ = nullptr;     // AVPacket*
     void *swr_ = nullptr;        // SwrContext*（整文件解码用）
     void *swrStream_ = nullptr;  // SwrContext*（流式解码用）
+    void *avio_ = nullptr;       // AVIOContext*（fd 打开时自建，Close 里连同 buffer 一起释放）
+    int fd_ = -1;                // dup 出来的 fd，归解码器所有
     std::vector<uint8_t> pending_;
     size_t pendingPos_ = 0;
     bool flushSent_ = false;

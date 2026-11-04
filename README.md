@@ -6,7 +6,7 @@
 - 上游：FFmpeg `n9.0`（commit `d32b387`），交叉编译到 `aarch64-linux-ohos` / `x86_64-linux-ohos`
 - 产物：带 SONAME 的动态库 + 完整头文件，`64 KB` 级别的集成成本（4 个 IMPORTED 目标）
 - 许可：**LGPL-2.1-or-later**（未启用 GPL / nonfree），见 [NOTICE.md](NOTICE.md)
-- 状态：M0 交叉编译 ✅、M1 真机解码 ✅、M2 播放链路已实现（待真机听声验证）、M3 平台硬解路由 ⏳
+- 状态：M0 交叉编译 ✅、M1 真机解码 ✅、**M2 播放链路真机验证通过 ✅**（文件选择器选歌、fd 直读、大文件实测中）、M3 平台硬解路由 ⏳
 
 > 仓库里的 `harmony/` 只是**验证载体**（一个只有 Play/Stop 的空白页），不是产品。库的价值在 `prebuilt/` 的产物和 `build/` 的构建脚本。
 
@@ -19,7 +19,7 @@
 | 容器解封装 | ✅ | `mov/mp4/m4a`、`matroska`、`ogg`、`flac`、`ape`、`dsf`、`wav`、`mp3`、`aac(ADTS)`、`tta`、`wv`、`caf`、`asf` |
 | 音频软解 | ✅ | `aac` `alac` `ape` `ac3` `dca(DTS)` `flac` `opus` `wmav2`，统一输出 S16 交错 |
 | 重采样 / 声道归一 | ✅ | `libswresample`，任意输入 → 指定采样率/声道（默认 48 kHz / 2ch） |
-| 音频播放输出 | ✅ | `OHAudio`（`OH_AudioRenderer`，数据写入回调模式），demo 里是 48 kHz / 2ch / S16 |
+| 音频播放输出 | ✅ | `OHAudio`（数据写入回调）；demo 支持系统文件选择器选歌、fd 直读、48 kHz / 2ch / S16 输出，含解码耗时 / CPU / RSS 日志 |
 | 视频硬解封装 | ✅（编译进） | `h264_oh` / `hevc_oh`，走 `--enable-ohcodec`；需要调用方提供 surface，demo 未接 |
 | 音频硬解（平台解码器） | ⏳ M3 | `OH_AudioCodec` 同步模式路由（API 20+） |
 | 视频软解 | ❌ | 未编入（`--disable-everything` 下只开了上面那些） |
@@ -86,7 +86,39 @@ C++ 侧的参考实现（解封装 → 软解 → 重采样 → OHAudio 播放�
 
 ---
 
-## 3. 从源码构建
+## 3. 参考播放器（demo 实现，不属于库本体）
+
+`harmony/` 里的播放器是**参考实现**，用来证明这套库能出声，不是产品接口：
+
+```
+系统文件选择器 (DocumentViewPicker)
+   └─ URI → fs.openSync(uri) → fd
+        └─ playerOpenFd(fd)  // native 内部 dup，ArkTS 立刻 close 自己的 fd
+             └─ 解码线程 + 2 秒环形缓冲(384KB) + OHAudio 写回调
+                  ├─ 预填 200ms 才 Start 渲染器（消掉启动欠载）
+                  ├─ EOF 且缓冲空 → 回调返回 0，位置不再推进
+                  └─ 每 2 秒打一行 [player] perf
+```
+
+性能日志长这样（HiLog，tag `FFM1`）：
+
+```
+I FFM1 : [player] perf decode_avg=0.045ms/frame calls=312 cpu=18% rss=48213KB ring=180KB written=12288KB
+```
+
+`playerStatus()` 返回的 JSON 里可直接读这些量：
+
+| 字段 | 含义 |
+| --- | --- |
+| `positionMs` / `audioMs` | 播放时钟（`GetFramesWritten`） / 真实音频推进（不含补的静音） |
+| `underflow` / `gaps` | 系统欠载计数 / 我们补静音的次数 |
+| `decodeAvgUs` / `decodeCalls` | 平均每帧解码耗时（微秒） / 解码调用次数 |
+| `cpuPercent` / `rssKb` | 进程 CPU 占比 / 常驻内存 |
+| `pcmHash` / `pcmPeak` | 自检哈希与峰值（仅内置样例） |
+
+---
+
+## 4. 从源码构建
 
 前置：Windows + DevEco Studio（自带 NDK/clang/CMake）+ MSYS2（`make`、`bash`）。
 
@@ -132,7 +164,7 @@ prebuilt/<abi>/
 | --- | --- | --- |
 | M0 | FFmpeg n9.0 交叉编译到 ohos，双 ABI，16 KB 页对齐，LGPL 配置 | ✅ |
 | M1 | NAPI 打通 open → read → decode（整文件解到 WAV，与桌面逐字节对拍） | ✅ 真机验证 |
-| M2 | 流式解码 + 环形缓冲 + `OH_AudioRenderer` 出声（Play/Stop） | ✅ 代码完成 / ⏳ 真机听声 |
+| M2 | 流式解码 + 环形缓冲 + `OH_AudioRenderer` 出声（Play/Stop） | ✅ 真机验证 |
 | M3 | `OH_AudioCodec` 同步模式做主力解码，FFmpeg 退为兜底 | ⏳ |
 | M4 | 按 TPC 规范补齐 `HPKBUILD` / `README.OpenSource` / CI，提交 tpc_c_cplusplus | ⏳ |
 
@@ -153,7 +185,8 @@ LICENSES/       # 第三方许可证全文
 
 ## 7. 已知限制
 
-- 只支持 **file 协议**；网络流要自己喂自定义 `AVIOContext`。
-- 播放器是**单实例**、无 seek / 无后台播放（M2 范围），暂停靠 `OH_AudioRenderer_Pause`。
+- 只支持 **file / fd 输入**；网络流要自己喂自定义 `AVIOContext`。
+- 播放器是**单实例**、**无 seek**（大文件只能从头播）、无后台播放；暂停用 `OH_AudioRenderer_Pause`。
 - 44.1 kHz 源会重采样到 48 kHz（OHAudio 输出固定），需要位真还原请用 M1 的整文件解码接口。
 - `libavfilter` 未启用 filter，暂时别指望滤镜链。
+- 大文件建议用 demo 里的"选歌播放"（picker → URI → fd），不要复制进沙箱：`playerOpenFd` 内部 `dup`，调用方拿到返回值即可关自己的 fd。

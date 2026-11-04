@@ -23,6 +23,8 @@ public:
     ~AudioPlayer();
 
     int Open(const std::string &path);
+    // 用 fd 打开（picker 选的 URI 先转 fd；内部 dup，调用方可以立刻 close）
+    int OpenFd(int fd);
     int Play();
     int Pause();
     int Stop();
@@ -58,6 +60,15 @@ private:
     std::atomic<uint64_t> realBytes_{0};     // 真正从 ring 取走的数据字节（音乐进度）
     std::atomic<int> maxCallbackBytes_{0};   // 回调要求过的最大块（诊断回调粒度）
 
+    // 性能统计（解码线程写，status 读）
+    std::atomic<uint64_t> decodeUs_{0};        // 累计解码耗时
+    std::atomic<uint64_t> decodeCalls_{0};
+    std::atomic<int64_t> framesDecoded_{0};
+    std::atomic<int> cpuPercent_{0};
+    std::atomic<long long> rssKb_{0};
+    int64_t lastCpuUs_ = 0;                    // 仅解码线程使用
+    int64_t lastPerfUs_ = 0;
+
     mutable std::mutex ringMutex_;
     std::vector<uint8_t> ring_;
     size_t ringRead_ = 0;
@@ -83,6 +94,7 @@ private:
     std::string path_;
     std::string codec_;
     int64_t durationMs_ = 0;
+    int srcFd_ = -1;   // OpenFd 时保留的 dup fd，Stop 后重播要用它
 
     mutable std::mutex errMutex_;
     std::string err_;
