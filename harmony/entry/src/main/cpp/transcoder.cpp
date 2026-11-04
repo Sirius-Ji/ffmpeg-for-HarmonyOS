@@ -1,0 +1,286 @@
+#include "transcoder.h"
+
+#include <cstdio>
+#include <sstream>
+
+#include <hilog/log.h>
+
+#include "fdio.h"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavutil/error.h>
+#include <libavutil/opt.h>
+#include <libswresample/swresample.h>
+}
+
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0xFF01
+#define LOG_TAG "FFM1"
+
+namespace {
+
+constexpr int kOutRate = 48000;
+constexpr int kOutChannels = 2;
+constexpr int kOutBitrate = 128000;
+
+std::string AvErr(int err) {
+    char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
+    av_strerror(err, buf, sizeof(buf));
+    return std::string(buf);
+}
+
+// 所有资源集中在这里，析构时按依赖顺序释放
+struct Ctx {
+    int inFd = -1;
+    int outFd = -1;
+    AVFormatContext *in = nullptr;
+    AVFormatContext *out = nullptr;
+    AVIOContext *inAvio = nullptr;
+    AVIOContext *outAvio = nullptr;
+    AVCodecContext *dec = nullptr;
+    AVCodecContext *enc = nullptr;
+    SwrContext *swr = nullptr;
+    AVFrame *frame = nullptr;     // 解码输出
+    AVFrame *encFrame = nullptr;  // 编码输入（48k/2ch/FLTP）
+    AVPacket *pkt = nullptr;
+
+    ~Ctx() {
+        if (pkt) av_packet_free(&pkt);
+        if (encFrame) av_frame_free(&encFrame);
+        if (frame) av_frame_free(&frame);
+        if (swr) swr_free(&swr);
+        if (enc) avcodec_free_context(&enc);
+        if (dec) avcodec_free_context(&dec);
+        if (in) avformat_close_input(&in);
+        if (inAvio) {
+            av_freep(&inAvio->buffer);
+            avio_context_free(&inAvio);
+        }
+        if (outAvio) {
+            av_freep(&outAvio->buffer);
+            avio_context_free(&outAvio);
+        }
+        if (out) avformat_free_context(out);
+        if (inFd >= 0) ::close(inFd);
+        if (outFd >= 0) ::close(outFd);
+    }
+};
+
+}  // namespace
+
+int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err) {
+    auto fail = [&](const std::string &what) {
+        if (err) *err = what;
+        OH_LOG_ERROR(LOG_APP, "[transcode] %{public}s", what.c_str());
+        return -1;
+    };
+
+    Ctx c;
+    c.inFd = ::dup(srcFd);
+    c.outFd = ::dup(dstFd);
+    if (c.inFd < 0 || c.outFd < 0) return fail("dup(fd) failed");
+
+    // ---------- 输入：fd → AVIOContext ----------
+    constexpr int kIoBuf = 64 * 1024;
+    auto *inBuf = static_cast<unsigned char *>(av_malloc(kIoBuf));
+    if (inBuf == nullptr) return fail("av_malloc(in) failed");
+    c.inAvio = avio_alloc_context(inBuf, kIoBuf, 0, (void *)(intptr_t)c.inFd,
+                                 ffio::ReadPacket, nullptr, ffio::Seek);
+    if (c.inAvio == nullptr) return fail("avio_alloc_context(in) failed");
+
+    c.in = avformat_alloc_context();
+    if (c.in == nullptr) return fail("avformat_alloc_context(in) failed");
+    c.in->pb = c.inAvio;
+    c.in->flags |= AVFMT_FLAG_CUSTOM_IO;
+
+    int ret = avformat_open_input(&c.in, nullptr, nullptr, nullptr);
+    if (ret < 0) return fail("avformat_open_input: " + AvErr(ret));
+    ret = avformat_find_stream_info(c.in, nullptr);
+    if (ret < 0) return fail("avformat_find_stream_info: " + AvErr(ret));
+
+    const int streamIndex = av_find_best_stream(c.in, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (streamIndex < 0) return fail("no audio stream");
+    AVStream *ist = c.in->streams[streamIndex];
+
+    const AVCodec *decCodec = avcodec_find_decoder(ist->codecpar->codec_id);
+    if (decCodec == nullptr) return fail("decoder not compiled in");
+    c.dec = avcodec_alloc_context3(decCodec);
+    if (c.dec == nullptr) return fail("avcodec_alloc_context3(dec) failed");
+    ret = avcodec_parameters_to_context(c.dec, ist->codecpar);
+    if (ret < 0) return fail("avcodec_parameters_to_context: " + AvErr(ret));
+    ret = avcodec_open2(c.dec, decCodec, nullptr);
+    if (ret < 0) return fail("decoder open: " + AvErr(ret));
+
+    // ---------- 输出：AAC + ipod(m4a) → fd ----------
+    ret = avformat_alloc_output_context2(&c.out, nullptr, "ipod", nullptr);
+    if (ret < 0 || c.out == nullptr) return fail("alloc_output_context2(ipod) failed");
+    auto *outBuf = static_cast<unsigned char *>(av_malloc(kIoBuf));
+    if (outBuf == nullptr) return fail("av_malloc(out) failed");
+    c.outAvio = avio_alloc_context(outBuf, kIoBuf, 1, (void *)(intptr_t)c.outFd,
+                                  nullptr, ffio::WritePacket, ffio::Seek);
+    if (c.outAvio == nullptr) return fail("avio_alloc_context(out) failed");
+    c.out->pb = c.outAvio;
+    c.out->flags |= AVFMT_FLAG_CUSTOM_IO;
+
+    const AVCodec *encCodec = avcodec_find_encoder(AV_CODEC_ID_AAC);
+    if (encCodec == nullptr) return fail("AAC encoder not compiled in");
+    c.enc = avcodec_alloc_context3(encCodec);
+    if (c.enc == nullptr) return fail("avcodec_alloc_context3(enc) failed");
+    c.enc->sample_rate = kOutRate;
+    av_channel_layout_default(&c.enc->ch_layout, kOutChannels);
+    c.enc->sample_fmt = AV_SAMPLE_FMT_FLTP;  // 原生 AAC 编码器只吃 fltp
+    c.enc->bit_rate = kOutBitrate;
+    c.enc->time_base = AVRational{1, kOutRate};
+    if (c.out->oformat->flags & AVFMT_GLOBALHEADER) c.enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    ret = avcodec_open2(c.enc, encCodec, nullptr);
+    if (ret < 0) return fail("AAC encoder open: " + AvErr(ret));
+
+    AVStream *ost = avformat_new_stream(c.out, nullptr);
+    if (ost == nullptr) return fail("avformat_new_stream failed");
+    ret = avcodec_parameters_from_context(ost->codecpar, c.enc);
+    if (ret < 0) return fail("avcodec_parameters_from_context: " + AvErr(ret));
+    ost->time_base = c.enc->time_base;
+
+    ret = avformat_write_header(c.out, nullptr);
+    if (ret < 0) return fail("avformat_write_header: " + AvErr(ret));
+
+    // ---------- 重采样：源 → 48k/2ch/FLTP ----------
+    ret = swr_alloc_set_opts2(&c.swr, &c.enc->ch_layout, c.enc->sample_fmt, c.enc->sample_rate,
+                              &c.dec->ch_layout, c.dec->sample_fmt, c.dec->sample_rate, 0, nullptr);
+    if (ret < 0 || c.swr == nullptr) return fail("swr_alloc_set_opts2 failed");
+    ret = swr_init(c.swr);
+    if (ret < 0) return fail("swr_init: " + AvErr(ret));
+
+    c.frame = av_frame_alloc();
+    c.encFrame = av_frame_alloc();
+    c.pkt = av_packet_alloc();
+    if (!c.frame || !c.encFrame || !c.pkt) return fail("alloc frame/packet failed");
+
+    int64_t outPts = 0;
+    int64_t totalFrames = 0;
+    int64_t totalPackets = 0;
+
+    auto drainEncoder = [&]() -> int {
+        for (;;) {
+            int r = avcodec_receive_packet(c.enc, c.pkt);
+            if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) return 0;
+            if (r < 0) return r;
+            av_packet_rescale_ts(c.pkt, c.enc->time_base, ost->time_base);
+            c.pkt->stream_index = ost->index;
+            r = av_interleaved_write_frame(c.out, c.pkt);
+            av_packet_unref(c.pkt);
+            if (r < 0) return r;
+            totalPackets++;
+        }
+    };
+
+    auto encodeFrame = [&](AVFrame *f) -> int {
+        const int r = avcodec_send_frame(c.enc, f);
+        if (r < 0) return r;
+        return drainEncoder();
+    };
+
+    auto convertAndEncode = [&](AVFrame *f) -> int {
+        const int maxOut = (int)av_rescale_rnd(
+            swr_get_delay(c.swr, c.dec->sample_rate) + f->nb_samples,
+            c.enc->sample_rate, c.dec->sample_rate, AV_ROUND_UP);
+        av_frame_unref(c.encFrame);
+        c.encFrame->format = c.enc->sample_fmt;
+        av_channel_layout_copy(&c.encFrame->ch_layout, &c.enc->ch_layout);
+        c.encFrame->sample_rate = c.enc->sample_rate;
+        c.encFrame->nb_samples = maxOut;
+        int r = av_frame_get_buffer(c.encFrame, 0);
+        if (r < 0) return r;
+        const int got = swr_convert(c.swr, c.encFrame->extended_data, maxOut,
+                                    (const uint8_t **)f->extended_data, f->nb_samples);
+        if (got < 0) return got;
+        c.encFrame->nb_samples = got;
+        c.encFrame->pts = outPts;
+        outPts += got;
+        if (got == 0) return 0;
+        return encodeFrame(c.encFrame);
+    };
+
+    int64_t decodedFrames = 0;
+    while ((ret = av_read_frame(c.in, c.pkt)) >= 0) {
+        if (c.pkt->stream_index != streamIndex) {
+            av_packet_unref(c.pkt);
+            continue;
+        }
+        ret = avcodec_send_packet(c.dec, c.pkt);
+        av_packet_unref(c.pkt);
+        if (ret < 0) return fail("decode send_packet: " + AvErr(ret));
+        for (;;) {
+            ret = avcodec_receive_frame(c.dec, c.frame);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+            if (ret < 0) return fail("decode receive_frame: " + AvErr(ret));
+            decodedFrames++;
+            ret = convertAndEncode(c.frame);
+            av_frame_unref(c.frame);
+            if (ret < 0) return fail("encode frame: " + AvErr(ret));
+            totalFrames = outPts;
+        }
+    }
+
+    // flush 解码器
+    if (ret != AVERROR_EOF) return fail("read_frame: " + AvErr(ret));
+    avcodec_send_packet(c.dec, nullptr);
+    for (;;) {
+        ret = avcodec_receive_frame(c.dec, c.frame);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+        if (ret < 0) return fail("decode flush: " + AvErr(ret));
+        decodedFrames++;
+        ret = convertAndEncode(c.frame);
+        av_frame_unref(c.frame);
+        if (ret < 0) return fail("encode flush frame: " + AvErr(ret));
+        totalFrames = outPts;
+    }
+
+    // flush 重采样器
+    for (;;) {
+        av_frame_unref(c.encFrame);
+        c.encFrame->format = c.enc->sample_fmt;
+        av_channel_layout_copy(&c.encFrame->ch_layout, &c.enc->ch_layout);
+        c.encFrame->sample_rate = c.enc->sample_rate;
+        c.encFrame->nb_samples = 4096;
+        ret = av_frame_get_buffer(c.encFrame, 0);
+        if (ret < 0) return fail("flush frame alloc failed");
+        const int got = swr_convert(c.swr, c.encFrame->extended_data, 4096, nullptr, 0);
+        if (got < 0) return fail("swr flush: " + AvErr(got));
+        if (got == 0) break;
+        c.encFrame->nb_samples = got;
+        c.encFrame->pts = outPts;
+        outPts += got;
+        ret = encodeFrame(c.encFrame);
+        if (ret < 0) return fail("encode swr flush: " + AvErr(ret));
+    }
+    totalFrames = outPts;
+
+    // flush 编码器
+    ret = encodeFrame(nullptr);
+    if (ret < 0) return fail("encoder flush: " + AvErr(ret));
+
+    ret = av_write_trailer(c.out);
+    if (ret < 0) return fail("av_write_trailer: " + AvErr(ret));
+    avio_flush(c.outAvio);
+
+    const int64_t bytes = c.outAvio->pos;
+    const int64_t durationMs = totalFrames * 1000 / kOutRate;
+
+    std::ostringstream os;
+    os << "{\"input\":{\"codec\":\"" << decCodec->name << "\",\"sampleRate\":" << c.dec->sample_rate
+       << ",\"channels\":" << c.dec->ch_layout.nb_channels << "}"
+       << ",\"output\":{\"codec\":\"aac\",\"container\":\"ipod/m4a\",\"sampleRate\":" << kOutRate
+       << ",\"channels\":" << kOutChannels << ",\"bitRate\":" << kOutBitrate << "}"
+       << ",\"decodedFrames\":" << decodedFrames << ",\"outFrames\":" << totalFrames
+       << ",\"packets\":" << totalPackets << ",\"bytes\":" << bytes
+       << ",\"durationMs\":" << durationMs << "}";
+    if (summary) *summary = os.str();
+
+    OH_LOG_INFO(LOG_APP, "[transcode] done in=%{public}d/%{public}d out=%{public}d/%{public}d bytes=%{public}lld frames=%{public}lld",
+                c.dec->sample_rate, c.dec->ch_layout.nb_channels, kOutRate, kOutChannels,
+                (long long)bytes, (long long)totalFrames);
+    return 0;
+}

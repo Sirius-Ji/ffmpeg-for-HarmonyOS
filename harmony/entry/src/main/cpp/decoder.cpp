@@ -1,5 +1,7 @@
 #include "decoder.h"
 
+#include "fdio.h"
+
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
@@ -69,37 +71,6 @@ std::string AvErr(int err) {
     return std::string(buf);
 }
 
-// —— fd 直读用的 AVIO 回调（picker 选出的 URI 转 fd 后走这条路，不复制文件）——
-int FdReadPacket(void *opaque, uint8_t *buf, int size) {
-    const int fd = (int)(intptr_t)opaque;
-    for (;;) {
-        const ssize_t n = ::read(fd, buf, (size_t)size);
-        if (n >= 0) return (int)n;
-        if (errno != EINTR) return AVERROR(errno);
-    }
-}
-
-int64_t FdSeek(void *opaque, int64_t offset, int whence) {
-    const int fd = (int)(intptr_t)opaque;
-    if (whence == AVSEEK_SIZE) {
-        const off_t cur = ::lseek(fd, 0, SEEK_CUR);
-        const off_t end = ::lseek(fd, 0, SEEK_END);
-        if (cur >= 0) ::lseek(fd, cur, SEEK_SET);
-        return end;
-    }
-    whence &= ~AVSEEK_FORCE;
-    int w = SEEK_SET;
-    if (whence == SEEK_CUR) {
-        w = SEEK_CUR;
-    } else if (whence == SEEK_END) {
-        w = SEEK_END;
-    } else if (whence != SEEK_SET) {
-        return AVERROR(EINVAL);
-    }
-    const off_t r = ::lseek(fd, (off_t)offset, w);
-    return r < 0 ? AVERROR(errno) : (int64_t)r;
-}
-
 }  // namespace
 
 AudioDecoder::AudioDecoder() = default;
@@ -165,7 +136,7 @@ int AudioDecoder::OpenFd(int fd, AudioInfo *info) {
         return AVERROR(ENOMEM);
     }
     AVIOContext *avio = avio_alloc_context(iobuf, kIoBuf, 0, (void *)(intptr_t)fd_,
-                                          FdReadPacket, nullptr, FdSeek);
+                                          ffio::ReadPacket, nullptr, ffio::Seek);
     if (avio == nullptr) {
         av_free(iobuf);
         SetError("avio_alloc_context failed");

@@ -41,7 +41,8 @@ set_target_properties(ff_swresample PROPERTIES
 add_library(entry SHARED
     napi_init.cpp
     decoder.cpp
-    audio_player.cpp)
+    audio_player.cpp
+    transcoder.cpp)
 
 target_include_directories(entry PRIVATE ${NATIVE_ROOT})
 target_compile_options(entry PRIVATE -pthread)

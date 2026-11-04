@@ -12,6 +12,7 @@
 
 #include "audio_player.h"
 #include "decoder.h"
+#include "transcoder.h"
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -206,8 +207,29 @@ napi_value PlayerOpenFd(napi_env env, napi_callback_info info) {
     return MakeResult(env, true, player->StatusJson());
 }
 
-napi_value PlayerPlay(napi_env env, napi_callback_info /*info*/) {
-    AudioPlayer *player = EnsurePlayer();
+// 转码示例：src fd + dst fd → AAC(ipod/m4a)。两个 fd 调用方持有，这里内部 dup。
+napi_value TranscodeToAacFn(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 2) return ResultError(env, "transcodeToAac(srcFd, dstFd): 参数不足");
+
+    int32_t srcFd = -1;
+    int32_t dstFd = -1;
+    if (napi_get_value_int32(env, argv[0], &srcFd) != napi_ok || srcFd < 0 ||
+        napi_get_value_int32(env, argv[1], &dstFd) != napi_ok || dstFd < 0) {
+        return ResultError(env, "transcodeToAac(srcFd, dstFd): fd 非法");
+    }
+
+    std::string summary;
+    std::string err;
+    OH_LOG_INFO(LOG_APP, "[transcode] start srcFd=%{public}d dstFd=%{public}d", srcFd, dstFd);
+    const int rc = TranscodeToAac(srcFd, dstFd, &summary, &err);
+    if (rc != 0) return ResultError(env, err.empty() ? "transcode failed" : err);
+    return MakeResult(env, true, summary);
+}
+
+napi_value PlayerPlay(napi_env env, napi_callback_info /*info*/) {    AudioPlayer *player = EnsurePlayer();
     if (player->Play() != 0) return ResultError(env, player->LastError());
     OH_LOG_INFO(LOG_APP, "[player] play");
     return MakeResult(env, true, player->StatusJson());
@@ -253,6 +275,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"playerStop", nullptr, PlayerStop, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"playerStatus", nullptr, PlayerStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"playerRelease", nullptr, PlayerRelease, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"transcodeToAac", nullptr, TranscodeToAacFn, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     OH_LOG_INFO(LOG_APP, "[init] libentry.so loaded, ffmpeg=%{public}s", "avformat/avcodec/avutil/swresample");

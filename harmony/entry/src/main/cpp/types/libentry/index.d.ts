@@ -17,6 +17,8 @@ declare const native: {
   playerStop: () => NapiResult;
   playerStatus: () => NapiResult;
   playerRelease: () => NapiResult;
+  // 转码示例：srcFd 解出的第一条音轨 → AAC(ipod/m4a) 写入 dstFd
+  transcodeToAac: (srcFd: number, dstFd: number) => NapiResult;
 };
 
 export default native;

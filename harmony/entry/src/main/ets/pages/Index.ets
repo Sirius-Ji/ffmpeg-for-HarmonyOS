@@ -41,6 +41,12 @@ struct Index {
           this.pickAndPlay();
         })
 
+      Button(this.busy ? '转码中…' : '转码测试（play.m4a → AAC m4a）')
+        .enabled(!this.busy)
+        .onClick(() => {
+          this.runTranscode();
+        })
+
       Text(this.status)
         .fontSize(12)
         .fontFamily('monospace')
@@ -188,6 +194,55 @@ struct Index {
       const msg = JSON.stringify(e);
       this.status = `播放异常：${msg}`;
       hilog.error(DOMAIN, TAG, 'playerPlay failed: %{public}s', msg);
+    }
+  }
+
+  // 转码示例：内置样例 play.m4a → AAC(ipod/m4a)，完成后直接播放结果
+  async runTranscode(): Promise<void> {
+    this.stopPolling();
+    try {
+      native.playerStop();
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'playerStop before transcode failed: %{public}s', JSON.stringify(e));
+    }
+    this.busy = true;
+    this.status = '转码中…';
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('play.m4a');
+      const dst = `${ctx.filesDir}/transcoded.m4a`;
+      const inFile = fs.openSync(src, fs.OpenMode.READ_ONLY);
+      const outFile = fs.openSync(dst, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try {
+        hilog.info(DOMAIN, TAG, 'transcode start %{public}s -> %{public}s', src, dst);
+        const res = native.transcodeToAac(inFile.fd, outFile.fd);
+        hilog.info(DOMAIN, TAG, 'transcode result ok=%{public}s data=%{public}s', String(res.ok), res.data);
+        if (!res.ok) {
+          this.status = `转码失败: ${res.data}`;
+          return;
+        }
+        const st = fs.statSync(dst);
+        this.status = `转码成功: ${st.size} B\n${dst}\n${res.data}`;
+
+        // 立刻播放转码结果，证明产物可用
+        const openR = native.playerOpen(dst);
+        if (openR.ok) {
+          const playR = native.playerPlay();
+          if (playR.ok) {
+            this.status += '\n已开始播放转码结果';
+            this.startPolling();
+          }
+        }
+      } finally {
+        fs.closeSync(inFile);
+        fs.closeSync(outFile);
+      }
+    } catch (e) {
+      const msg = JSON.stringify(e);
+      this.status = `转码异常: ${msg}`;
+      hilog.error(DOMAIN, TAG, 'transcode failed: %{public}s', msg);
+    } finally {
+      this.busy = false;
     }
   }
 

@@ -101,6 +101,20 @@ C++ 侧的参考实现（解封装 → 软解 → 重采样 → OHAudio 播放�
 [`harmony/entry/src/main/cpp/decoder.cpp`](harmony/entry/src/main/cpp/decoder.cpp) 和
 [`audio_player.cpp`](harmony/entry/src/main/cpp/audio_player.cpp)，可以直接抄。
 
+转码侧在 [`transcoder.cpp`](harmony/entry/src/main/cpp/transcoder.cpp)：解封装 → 软解 →
+重采样到 48 kHz/2ch → **AAC 编码** → **ipod（m4a）封装**，全程走 fd，不落临时文件：
+
+```ts
+const inFile = fs.openSync(src, fs.OpenMode.READ_ONLY);
+const outFile = fs.openSync(dst, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+const res = native.transcodeToAac(inFile.fd, outFile.fd);  // { ok, data }
+fs.closeSync(inFile);
+fs.closeSync(outFile);
+```
+
+demo 里的"转码测试"按钮会把内置 `play.m4a` 转成 `filesDir/transcoded.m4a` 并直接播放结果，
+转完能在状态栏看到输入/输出参数、包数、字节数。
+
 ---
 
 ## 3. 参考播放器（demo 实现，不属于库本体）
