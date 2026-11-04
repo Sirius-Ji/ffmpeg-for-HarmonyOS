@@ -6,7 +6,7 @@
 - 上游：FFmpeg `n9.0`（commit `d32b387`），交叉编译到 `aarch64-linux-ohos` / `x86_64-linux-ohos`
 - 产物：带 SONAME 的动态库 + 完整头文件，`64 KB` 级别的集成成本（4 个 IMPORTED 目标）
 - 许可：**LGPL-2.1-or-later**（未启用 GPL / nonfree），见 [NOTICE.md](NOTICE.md)
-- 状态：M0 交叉编译 ✅、M1 真机解码 ✅、**M2 播放链路真机验证通过 ✅**（文件选择器选歌、fd 直读、大文件实测中）、M3 平台硬解路由 ⏳
+- 状态：M0 交叉编译 ✅、M1 真机解码 ✅、**M2 播放链路真机验证通过 ✅**（文件选择器选歌、fd 直读、192 kHz/2ch 大文件 FLAC 实测无卡顿无爆音）、M3 平台硬解路由 ⏳
 
 > 仓库里的 `harmony/` 只是**验证载体**（一个只有 Play/Stop 的空白页），不是产品。库的价值在 `prebuilt/` 的产物和 `build/` 的构建脚本。
 
