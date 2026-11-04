@@ -8,6 +8,9 @@
 *.cpp text eol=lf
 *.h   text eol=lf
 
+# 许可证全文逐字节保真，不做行尾规范化
+LICENSES/* -text
+
 # 二进制
 *.so  binary
 *.png binary

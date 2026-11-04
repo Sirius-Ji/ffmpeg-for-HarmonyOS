@@ -6,19 +6,45 @@ import native from 'libentry.so';
 @Entry
 @Component
 struct Index {
-  @State logText: string = '点下面开始：解 test.m4a / test.flac / test.opus，并落成 WAV';
+  @State status: string = '未播放';
+  @State logText: string = 'M1 自检：解 test.m4a / test.flac / test.opus 并落 WAV';
   @State busy: boolean = false;
+  private timer: number = -1;
+
+  aboutToDisappear(): void {
+    this.stopPolling();
+  }
 
   build() {
     Column({ space: 12 }) {
-      Text('ffmpeg-for-HarmonyOS · M1 自检')
+      Text('ffmpeg-for-HarmonyOS · M2 播放自检')
         .fontSize(18)
         .fontWeight(FontWeight.Bold)
-      Button(this.busy ? '解码中…' : '开始解码测试')
+
+      Row({ space: 12 }) {
+        Button('Play')
+          .onClick(() => {
+            this.onPlay();
+          })
+        Button('Stop')
+          .onClick(() => {
+            this.onStop();
+          })
+      }
+
+      Text(this.status)
+        .fontSize(12)
+        .fontFamily('monospace')
+        .width('100%')
+
+      Divider()
+
+      Button(this.busy ? '解码中…' : 'M1 解码自检')
         .enabled(!this.busy)
         .onClick(() => {
           this.runTest();
         })
+
       Scroll() {
         Text(this.logText)
           .fontSize(12)
@@ -31,6 +57,54 @@ struct Index {
     .padding(16)
     .width('100%')
     .height('100%')
+  }
+
+  // 把 rawfile 里的样例拷到应用沙箱，返回真实路径
+  async ensureSample(name: string): Promise<string> {
+    const ctx = getContext(this) as common.UIAbilityContext;
+    const dst = `${ctx.filesDir}/${name}`;
+    if (!fs.accessSync(dst)) {
+      const raw = await ctx.resourceManager.getRawFileContent(name);
+      const file = fs.openSync(dst, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      fs.writeSync(file.fd, raw.buffer as ArrayBuffer);
+      fs.closeSync(file);
+    }
+    return dst;
+  }
+
+  async onPlay(): Promise<void> {
+    try {
+      const src = await this.ensureSample('test.m4a');
+      const openRes: string = native.playerOpen(src);
+      const playRes: string = native.playerPlay();
+      this.status = `open: ${openRes}\nplay: ${playRes}`;
+      this.startPolling();
+    } catch (e) {
+      this.status = `异常: ${JSON.stringify(e)}`;
+    }
+  }
+
+  onStop(): void {
+    try {
+      this.stopPolling();
+      this.status = native.playerStop();
+    } catch (e) {
+      this.status = `异常: ${JSON.stringify(e)}`;
+    }
+  }
+
+  startPolling(): void {
+    this.stopPolling();
+    this.timer = setInterval(() => {
+      this.status = native.playerStatus();
+    }, 500);
+  }
+
+  stopPolling(): void {
+    if (this.timer >= 0) {
+      clearInterval(this.timer);
+      this.timer = -1;
+    }
   }
 
   async runTest(): Promise<void> {

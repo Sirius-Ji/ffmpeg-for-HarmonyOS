@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 struct AudioInfo {
     std::string format;
@@ -21,8 +22,11 @@ struct ReadStats {
     int64_t lastPtsMs = 0;
 };
 
-// M1 的最小解码器：avformat 解封装 + avcodec 软解 + swresample 统一成 S16 交错。
-// M3 会在这层下面加 OH_AudioCodec 后端，接口保持不变。
+// 音频解码器：avformat 解封装 + avcodec 软解 + swresample 统一成 S16 交错。
+// 两种用法：
+//   1) DecodeAllToWav / ReadPackets —— M1 的整文件自检与解封装统计
+//   2) ReadPcm —— M2 的流式拉取，给播放器按块取 PCM
+// M3 会在这层下面加 OH_AudioCodec 后端，对外接口保持不变。
 class AudioDecoder {
 public:
     AudioDecoder();
@@ -37,6 +41,11 @@ public:
     // 只读封装：数一数音频包的个数/字节/PTS 范围，不解码
     int ReadPackets(ReadStats *out);
 
+    // 流式解码：拉一块 S16 交错 PCM 到 out，统一重采样到 outRate / outChannels。
+    // 返回 0 = 有数据；AVERROR_EOF = 播完了；其他负数 = 出错。
+    int ReadPcm(std::vector<uint8_t> &out, int maxFrames, int outRate, int outChannels);
+    bool Eof() const { return eof_; }
+
     // 把当前解码器的信息以 JSON 形式返回，方便 ArkTS 直接展示
     std::string InfoJson(const AudioInfo &info) const;
 
@@ -50,11 +59,19 @@ private:
     int DrainDecoder(void *wav);
     void SetError(const std::string &what);
 
+    // 流式路径：把下一帧（或 swr 残留）转换进 pending_，供 ReadPcm 取用
+    int StreamFillPending(int outRate, int outChannels);
+
     void *fmt_ = nullptr;        // AVFormatContext*
     void *dec_ = nullptr;        // AVCodecContext*
     void *frame_ = nullptr;      // AVFrame*
     void *packet_ = nullptr;     // AVPacket*
-    void *swr_ = nullptr;        // SwrContext*
+    void *swr_ = nullptr;        // SwrContext*（整文件解码用）
+    void *swrStream_ = nullptr;  // SwrContext*（流式解码用）
+    std::vector<uint8_t> pending_;
+    size_t pendingPos_ = 0;
+    bool flushSent_ = false;
+    bool eof_ = false;
     int streamIndex_ = -1;
     int outChannels_ = 0;
     int outSampleRate_ = 0;

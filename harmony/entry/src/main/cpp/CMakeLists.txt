@@ -40,13 +40,16 @@ set_target_properties(ff_swresample PROPERTIES
 # ---- NAPI 模块 ----
 add_library(entry SHARED
     napi_init.cpp
-    decoder.cpp)
+    decoder.cpp
+    audio_player.cpp)
 
 target_include_directories(entry PRIVATE ${NATIVE_ROOT})
+target_compile_options(entry PRIVATE -pthread)
 
 target_link_libraries(entry PUBLIC
     libace_napi.z.so
     libhilog_ndk.z.so
+    libohaudio.so
     ff_avformat
     ff_avcodec
     ff_avutil

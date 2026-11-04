@@ -1,12 +1,16 @@
-// M1 的 NAPI 层：只做三件事 —— open（拿信息）、read（解封装统计）、decode（落 WAV + 算哈希）。
-// 每个关键步骤都往 HiLog 打一行，tag = FFM1，控制台过滤即可。
+// M1/M2 的 NAPI 层：
+//   M1 —— open（拿信息）、read（解封装统计）、decode（落 WAV + 算哈希）
+//   M2 —— playerOpen/Play/Pause/Stop/Status/Release（OHAudio 出声）
+// 关键步骤都往 HiLog 打一行，tag = FFM1，控制台过滤即可。
 #include <hilog/log.h>
 #include <napi/native_api.h>
 
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "audio_player.h"
 #include "decoder.h"
 
 #undef LOG_DOMAIN
@@ -139,11 +143,76 @@ napi_value DecodeToWav(napi_env env, napi_callback_info info) {
     return MakeString(env, json);
 }
 
+// ---------------- M2：播放器 ----------------
+// M2 先做单实例：一个进程一个播放器，够验证链路，接口也简单。
+
+std::unique_ptr<AudioPlayer> g_player;
+
+AudioPlayer *EnsurePlayer() {
+    if (!g_player) g_player.reset(new AudioPlayer());
+    return g_player.get();
+}
+
+napi_value PlayerOpen(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 1) return ErrorJson(env, "playerOpen(path): missing path");
+
+    const std::string path = GetString(env, argv[0]);
+    AudioPlayer *player = EnsurePlayer();
+    if (player->Open(path) != 0) return ErrorJson(env, player->LastError());
+
+    OH_LOG_INFO(LOG_APP, "[player] open %{public}s", path.c_str());
+    return MakeString(env, player->StatusJson());
+}
+
+napi_value PlayerPlay(napi_env env, napi_callback_info /*info*/) {
+    AudioPlayer *player = EnsurePlayer();
+    if (player->Play() != 0) return ErrorJson(env, player->LastError());
+    OH_LOG_INFO(LOG_APP, "[player] play");
+    return MakeString(env, player->StatusJson());
+}
+
+napi_value PlayerPause(napi_env env, napi_callback_info /*info*/) {
+    AudioPlayer *player = EnsurePlayer();
+    if (player->Pause() != 0) return ErrorJson(env, player->LastError());
+    OH_LOG_INFO(LOG_APP, "[player] pause");
+    return MakeString(env, player->StatusJson());
+}
+
+napi_value PlayerStop(napi_env env, napi_callback_info /*info*/) {
+    AudioPlayer *player = EnsurePlayer();
+    player->Stop();
+    OH_LOG_INFO(LOG_APP, "[player] stop");
+    return MakeString(env, player->StatusJson());
+}
+
+napi_value PlayerStatus(napi_env env, napi_callback_info /*info*/) {
+    AudioPlayer *player = EnsurePlayer();
+    return MakeString(env, player->StatusJson());
+}
+
+napi_value PlayerRelease(napi_env env, napi_callback_info /*info*/) {
+    if (g_player) {
+        g_player->Release();
+        g_player.reset();
+    }
+    OH_LOG_INFO(LOG_APP, "[player] release");
+    return MakeString(env, "{\"state\":\"idle\"}");
+}
+
 napi_value Init(napi_env env, napi_value exports) {
     napi_property_descriptor desc[] = {
         {"probe", nullptr, Probe, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"readPackets", nullptr, ReadPackets, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"decodeToWav", nullptr, DecodeToWav, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"playerOpen", nullptr, PlayerOpen, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"playerPlay", nullptr, PlayerPlay, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"playerPause", nullptr, PlayerPause, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"playerStop", nullptr, PlayerStop, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"playerStatus", nullptr, PlayerStatus, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"playerRelease", nullptr, PlayerRelease, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     OH_LOG_INFO(LOG_APP, "[init] libentry.so loaded, ffmpeg=%{public}s", "avformat/avcodec/avutil/swresample");

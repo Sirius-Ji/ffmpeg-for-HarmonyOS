@@ -1,5 +1,6 @@
 #include "decoder.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
@@ -74,11 +75,16 @@ AudioDecoder::~AudioDecoder() { Close(); }
 void AudioDecoder::SetError(const std::string &what) { err_ = what; }
 
 void AudioDecoder::Close() {
+    if (swrStream_) { swr_free((SwrContext **)&swrStream_); swrStream_ = nullptr; }
     if (swr_) { swr_free((SwrContext **)&swr_); swr_ = nullptr; }
     if (frame_) { av_frame_free((AVFrame **)&frame_); frame_ = nullptr; }
     if (packet_) { av_packet_free((AVPacket **)&packet_); packet_ = nullptr; }
     if (dec_) { avcodec_free_context((AVCodecContext **)&dec_); dec_ = nullptr; }
     if (fmt_) { avformat_close_input((AVFormatContext **)&fmt_); fmt_ = nullptr; }
+    pending_.clear();
+    pendingPos_ = 0;
+    flushSent_ = false;
+    eof_ = false;
     streamIndex_ = -1;
     outChannels_ = 0;
     outSampleRate_ = 0;
@@ -292,4 +298,131 @@ int AudioDecoder::ReadPackets(ReadStats *out) {
     }
     // 读干净之后文件在 EOF，这里不还原，调用方读完就不会再读
     return ret == AVERROR_EOF ? 0 : ret;
+}
+
+// ---------------- M2：流式解码 ----------------
+
+int AudioDecoder::StreamFillPending(int outRate, int outChannels) {
+    if (!fmt_ || !dec_) {
+        SetError("decoder not open");
+        return AVERROR(EINVAL);
+    }
+    AVFormatContext *fmt = (AVFormatContext *)fmt_;
+    AVCodecContext *dec = (AVCodecContext *)dec_;
+    AVFrame *frame = (AVFrame *)frame_;
+    AVPacket *pkt = (AVPacket *)packet_;
+
+    if (pendingPos_ < pending_.size()) return 0;  // 上一帧还没消费完
+    pending_.clear();
+    pendingPos_ = 0;
+
+    for (;;) {
+        int ret = avcodec_receive_frame(dec, frame);
+        if (ret == 0) {
+            if (!swrStream_) {
+                AVChannelLayout outLayout;
+                if (frame->ch_layout.nb_channels == outChannels) {
+                    av_channel_layout_copy(&outLayout, &frame->ch_layout);
+                } else {
+                    av_channel_layout_default(&outLayout, outChannels);
+                }
+                SwrContext *swr = nullptr;
+                int r = swr_alloc_set_opts2(&swr, &outLayout, AV_SAMPLE_FMT_S16, outRate,
+                                            &frame->ch_layout, (AVSampleFormat)frame->format,
+                                            frame->sample_rate, 0, nullptr);
+                av_channel_layout_uninit(&outLayout);
+                if (r < 0 || !swr) {
+                    SetError("swr_alloc_set_opts2(stream): " + AvErr(r));
+                    return r < 0 ? r : AVERROR(ENOMEM);
+                }
+                if (swr_init(swr) < 0) {
+                    swr_free(&swr);
+                    SetError("swr_init(stream) failed");
+                    return AVERROR(EINVAL);
+                }
+                swrStream_ = swr;
+            }
+
+            const int maxOut = (int)av_rescale_rnd(
+                swr_get_delay((SwrContext *)swrStream_, frame->sample_rate) + frame->nb_samples,
+                outRate, frame->sample_rate, AV_ROUND_UP);
+            pending_.resize((size_t)maxOut * outChannels * 2 + 4096);
+            uint8_t *dst[1] = {pending_.data()};
+            int got = swr_convert((SwrContext *)swrStream_, dst, maxOut,
+                                  (const uint8_t **)frame->extended_data, frame->nb_samples);
+            av_frame_unref(frame);
+            if (got < 0) {
+                SetError("swr_convert(stream): " + AvErr(got));
+                return got;
+            }
+            pending_.resize((size_t)got * outChannels * 2);
+            if (pending_.empty()) continue;  // 重采样暂时没产出，继续拿帧
+            return 0;
+        }
+
+        if (ret == AVERROR(EAGAIN)) {
+            if (flushSent_) return AVERROR_EOF;
+            int r = av_read_frame(fmt, pkt);
+            if (r == AVERROR_EOF) {
+                avcodec_send_packet(dec, nullptr);  // 进 drain 阶段
+                flushSent_ = true;
+                continue;
+            }
+            if (r < 0) {
+                SetError("av_read_frame: " + AvErr(r));
+                return r;
+            }
+            if (pkt->stream_index != streamIndex_) {
+                av_packet_unref(pkt);
+                continue;
+            }
+            int sr = avcodec_send_packet(dec, pkt);
+            av_packet_unref(pkt);
+            if (sr < 0 && sr != AVERROR(EAGAIN)) {
+                SetError("avcodec_send_packet: " + AvErr(sr));
+                return sr;
+            }
+            continue;
+        }
+
+        if (ret == AVERROR_EOF) {
+            // 把 swr 里残留的样本倒干净
+            if (swrStream_) {
+                const int kMax = 4096;
+                pending_.resize((size_t)kMax * outChannels * 2);
+                uint8_t *dst[1] = {pending_.data()};
+                int got = swr_convert((SwrContext *)swrStream_, dst, kMax, nullptr, 0);
+                if (got > 0) {
+                    pending_.resize((size_t)got * outChannels * 2);
+                    return 0;
+                }
+                pending_.clear();
+            }
+            eof_ = true;
+            return AVERROR_EOF;
+        }
+
+        SetError("avcodec_receive_frame: " + AvErr(ret));
+        return ret;
+    }
+}
+
+int AudioDecoder::ReadPcm(std::vector<uint8_t> &out, int maxFrames, int outRate, int outChannels) {
+    out.clear();
+    if (maxFrames <= 0 || outRate <= 0 || outChannels <= 0) return AVERROR(EINVAL);
+
+    const size_t want = (size_t)maxFrames * outChannels * 2;
+    while (out.size() < want) {
+        int ret = StreamFillPending(outRate, outChannels);
+        if (ret < 0) {
+            // 已经有数据就先给出去，EOF 留到下次再报，避免丢尾巴
+            if (!out.empty()) return 0;
+            return ret;
+        }
+        const size_t avail = pending_.size() - pendingPos_;
+        const size_t take = std::min(avail, want - out.size());
+        out.insert(out.end(), pending_.begin() + pendingPos_, pending_.begin() + pendingPos_ + take);
+        pendingPos_ += take;
+    }
+    return 0;
 }
