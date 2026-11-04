@@ -7,6 +7,13 @@
 > 封装 `mp4/mov/ipod/mp3/flac/wav/matroska/adts/ogg/opus`）。
 > **API 仍可能变更**，欢迎试用、集成、提 Issue 和 PR。
 
+## 🚀 v0.1.1 更新亮点
+
+- **全新转码能力**：打通底层转码链路，支持输出 **AAC**、**MP3** 和 **Opus** 三种主流音频格式。
+- **引入 LAME 引擎**：为了解决 FFmpeg 无原生 MP3 编码器的问题，已成功交叉编译并集成 `libmp3lame.so.0`。
+- **Demo 交互升级**：应用内新增三个转码测试按钮，支持一键“解码→重采样→编码→封装”，并在转码后自动播放，真机实测三种格式全部完美运行。
+- **细节修复**：补全 `mp3`、`pcm_s24le` 等解码器白名单；彻底移除冗余的 `libavfilter` 以精简体积。
+
 可开箱即用的面向 **OpenHarmony / HarmonyOS NEXT** 的纯血鸿蒙 FFmpeg 音视频基础库（**基座**）。
 目标不是toC的播放器 App，而是面向鸿蒙开发者的能被直接集成的三方库，最终进入 OpenHarmony 供应链（TPC / [tpc_c_cplusplus](https://gitee.com/openharmony-sig/tpc_c_cplusplus)）。
 
