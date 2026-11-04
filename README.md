@@ -1,5 +1,10 @@
 # ffmpeg-for-HarmonyOS
 
+> **v0.1.0 Alpha · 早期测试版**
+>
+> 核心的解封装 / 软解 / 播放链路已经打通（真机验证：192 kHz/2ch FLAC 无卡顿、无爆音）。
+> **API 仍可能变更**，暂不建议直接用在生产环境。非常欢迎开发者试用、集成、提 Issue 和 PR。
+
 可开箱即用的面向 **OpenHarmony / HarmonyOS NEXT** 的纯血鸿蒙 FFmpeg 音视频基础库（**基座**）。
 目标不是toC的播放器 App，而是面向鸿蒙开发者的能被直接集成的三方库，最终进入 OpenHarmony 供应链（TPC / [tpc_c_cplusplus](https://gitee.com/openharmony-sig/tpc_c_cplusplus)）。
 
