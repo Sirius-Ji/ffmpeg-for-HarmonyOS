@@ -44,10 +44,12 @@ struct Ctx {
     SwrContext *swr = nullptr;
     AVFrame *frame = nullptr;     // 解码输出
     AVFrame *encFrame = nullptr;  // 编码输入（48k/2ch/FLTP）
+    AVFrame *staging = nullptr;   // 按编码器 frame_size 切片的累积帧
     AVPacket *pkt = nullptr;
 
     ~Ctx() {
         if (pkt) av_packet_free(&pkt);
+        if (staging) av_frame_free(&staging);
         if (encFrame) av_frame_free(&encFrame);
         if (frame) av_frame_free(&frame);
         if (swr) swr_free(&swr);
@@ -168,12 +170,29 @@ int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err)
 
     c.frame = av_frame_alloc();
     c.encFrame = av_frame_alloc();
+    c.staging = av_frame_alloc();
     c.pkt = av_packet_alloc();
-    if (!c.frame || !c.encFrame || !c.pkt) return fail("alloc frame/packet failed");
+    if (!c.frame || !c.encFrame || !c.staging || !c.pkt) return fail("alloc frame/packet failed");
+
+    // AAC 编码器要求每帧恰好 frame_size 个采样（原生实现是 1024）。
+    // swr 一次可能吐 1115（44.1k→48k）甚至几千个采样，直接送会 EINVAL，必须切片。
+    const int frameSize = c.enc->frame_size > 0 ? c.enc->frame_size : 1024;
+    OH_LOG_INFO(LOG_APP,
+                "[transcode] encoder frame_size=%{public}d fmt=%{public}d rate=%{public}d ch=%{public}d",
+                frameSize, (int)c.enc->sample_fmt, c.enc->sample_rate, c.enc->ch_layout.nb_channels);
+
+    c.staging->format = c.enc->sample_fmt;
+    av_channel_layout_copy(&c.staging->ch_layout, &c.enc->ch_layout);
+    c.staging->sample_rate = c.enc->sample_rate;
+    c.staging->nb_samples = frameSize;
+    ret = av_frame_get_buffer(c.staging, 0);
+    if (ret < 0) return fail("staging frame alloc: " + AvErr(ret));
 
     int64_t outPts = 0;
     int64_t totalFrames = 0;
     int64_t totalPackets = 0;
+    int64_t sentFrames = 0;
+    int pending = 0;
 
     auto drainEncoder = [&]() -> int {
         for (;;) {
@@ -191,8 +210,52 @@ int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err)
 
     auto encodeFrame = [&](AVFrame *f) -> int {
         const int r = avcodec_send_frame(c.enc, f);
-        if (r < 0) return r;
+        if (r < 0) {
+            OH_LOG_ERROR(LOG_APP,
+                         "[transcode] send_frame ret=%{public}d (%{public}s) nb=%{public}d fmt=%{public}d pts=%{public}lld",
+                         r, AvErr(r).c_str(), f ? f->nb_samples : -1, f ? f->format : -1,
+                         f ? (long long)f->pts : -1);
+            return r;
+        }
         return drainEncoder();
+    };
+
+    // 把累积帧送进编码器；nb_samples 可能小于 frame_size（最后一帧）
+    auto sendStaging = [&]() -> int {
+        if (pending <= 0) return 0;
+        c.staging->nb_samples = pending;
+        c.staging->pts = outPts;
+        const int64_t pts = outPts;
+        outPts += pending;
+        const int nb = pending;
+        pending = 0;
+        const int r = encodeFrame(c.staging);
+        if (sentFrames < 3) {
+            OH_LOG_INFO(LOG_APP, "[transcode] send frame nb=%{public}d pts=%{public}lld", nb, (long long)pts);
+        }
+        sentFrames++;
+        if (r < 0) return r;
+        // 编码器可能持有这一帧的引用，下一轮写入前确保缓冲区独占
+        return av_frame_make_writable(c.staging);
+    };
+
+    auto pushSamples = [&](const uint8_t *const *data, int n) -> int {
+        int off = 0;
+        while (off < n) {
+            const int room = frameSize - pending;
+            const int take = (n - off) < room ? (n - off) : room;
+            const int r = av_samples_copy(c.staging->extended_data,
+                                          const_cast<uint8_t *const *>(data), pending, off, take,
+                                          kOutChannels, AV_SAMPLE_FMT_FLTP);
+            if (r < 0) return r;
+            pending += take;
+            off += take;
+            if (pending == frameSize) {
+                const int e = sendStaging();
+                if (e < 0) return e;
+            }
+        }
+        return 0;
     };
 
     auto convertAndEncode = [&](AVFrame *f) -> int {
@@ -209,11 +272,8 @@ int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err)
         const int got = swr_convert(c.swr, c.encFrame->extended_data, maxOut,
                                     (const uint8_t **)f->extended_data, f->nb_samples);
         if (got < 0) return got;
-        c.encFrame->nb_samples = got;
-        c.encFrame->pts = outPts;
-        outPts += got;
         if (got == 0) return 0;
-        return encodeFrame(c.encFrame);
+        return pushSamples((const uint8_t *const *)c.encFrame->extended_data, got);
     };
 
     int64_t decodedFrames = 0;
@@ -263,12 +323,13 @@ int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err)
         const int got = swr_convert(c.swr, c.encFrame->extended_data, 4096, nullptr, 0);
         if (got < 0) return fail("swr flush: " + AvErr(got));
         if (got == 0) break;
-        c.encFrame->nb_samples = got;
-        c.encFrame->pts = outPts;
-        outPts += got;
-        ret = encodeFrame(c.encFrame);
+        ret = pushSamples((const uint8_t *const *)c.encFrame->extended_data, got);
         if (ret < 0) return fail("encode swr flush: " + AvErr(ret));
     }
+
+    // 最后一帧可能不满 frame_size，AAC 编码器支持 SMALL_LAST_FRAME
+    ret = sendStaging();
+    if (ret < 0) return fail("encode last frame: " + AvErr(ret));
     totalFrames = outPts;
 
     // flush 编码器
@@ -285,7 +346,7 @@ int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err)
     std::ostringstream os;
     os << "{\"input\":{\"codec\":\"" << decCodec->name << "\",\"sampleRate\":" << c.dec->sample_rate
        << ",\"channels\":" << c.dec->ch_layout.nb_channels << "}"
-       << ",\"output\":{\"codec\":\"aac\",\"container\":\"ipod/m4a\",\"sampleRate\":" << kOutRate
+       << ",\"output\":{\"codec\":\"aac\",\"container\":\"mp4/m4a\",\"sampleRate\":" << kOutRate
        << ",\"channels\":" << kOutChannels << ",\"bitRate\":" << kOutBitrate << "}"
        << ",\"decodedFrames\":" << decodedFrames << ",\"outFrames\":" << totalFrames
        << ",\"packets\":" << totalPackets << ",\"bytes\":" << bytes
