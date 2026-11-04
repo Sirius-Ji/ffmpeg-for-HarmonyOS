@@ -153,18 +153,37 @@ AudioPlayer *EnsurePlayer() {
     return g_player.get();
 }
 
+// player* 统一返回 { ok: boolean, data: string }。
+// 不要用"JSON 里有没有 error 字段"来判断成败——StatusJson 永远带 error:""。
+napi_value MakeResult(napi_env env, bool ok, const std::string &payload) {
+    napi_value obj = nullptr;
+    napi_create_object(env, &obj);
+    napi_value okVal = nullptr;
+    napi_get_boolean(env, ok, &okVal);
+    napi_set_named_property(env, obj, "ok", okVal);
+    napi_value dataVal = nullptr;
+    napi_create_string_utf8(env, payload.c_str(), payload.size(), &dataVal);
+    napi_set_named_property(env, obj, "data", dataVal);
+    return obj;
+}
+
+napi_value ResultError(napi_env env, const std::string &what) {
+    OH_LOG_ERROR(LOG_APP, "[error] %{public}s", what.c_str());
+    return MakeResult(env, false, "{\"error\":\"" + JsonEscape(what) + "\"}");
+}
+
 napi_value PlayerOpen(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1] = {nullptr};
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc < 1) return ErrorJson(env, "playerOpen(path): missing path");
+    if (argc < 1) return ResultError(env, "playerOpen(path): missing path");
 
     const std::string path = GetString(env, argv[0]);
     AudioPlayer *player = EnsurePlayer();
-    if (player->Open(path) != 0) return ErrorJson(env, player->LastError());
+    if (player->Open(path) != 0) return ResultError(env, player->LastError());
 
     OH_LOG_INFO(LOG_APP, "[player] open %{public}s", path.c_str());
-    return MakeString(env, player->StatusJson());
+    return MakeResult(env, true, player->StatusJson());
 }
 
 // 用 fd 打开：ArkTS 侧 picker 拿到 URI → fs.openSync(uri) → 把 fd 传进来
@@ -172,44 +191,45 @@ napi_value PlayerOpenFd(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value argv[1] = {nullptr};
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc < 1) return ErrorJson(env, "playerOpenFd(fd): missing fd");
+    if (argc < 1) return ResultError(env, "playerOpenFd(fd): missing fd");
 
     int32_t fd = -1;
     if (napi_get_value_int32(env, argv[0], &fd) != napi_ok || fd < 0) {
-        return ErrorJson(env, "playerOpenFd(fd): invalid fd");
+        return ResultError(env, "playerOpenFd(fd): invalid fd");
     }
 
     AudioPlayer *player = EnsurePlayer();
     OH_LOG_INFO(LOG_APP, "[player] playerOpenFd fd=%{public}d", fd);
-    if (player->OpenFd(fd) != 0) return ErrorJson(env, player->LastError());
+    if (player->OpenFd(fd) != 0) return ResultError(env, player->LastError());
 
-    OH_LOG_INFO(LOG_APP, "[player] open via fd %{public}d", fd);
-    return MakeString(env, player->StatusJson());
+    OH_LOG_INFO(LOG_APP, "[player] open via fd %{public}d ok", fd);
+    return MakeResult(env, true, player->StatusJson());
 }
 
-napi_value PlayerPlay(napi_env env, napi_callback_info /*info*/) {    AudioPlayer *player = EnsurePlayer();
-    if (player->Play() != 0) return ErrorJson(env, player->LastError());
+napi_value PlayerPlay(napi_env env, napi_callback_info /*info*/) {
+    AudioPlayer *player = EnsurePlayer();
+    if (player->Play() != 0) return ResultError(env, player->LastError());
     OH_LOG_INFO(LOG_APP, "[player] play");
-    return MakeString(env, player->StatusJson());
+    return MakeResult(env, true, player->StatusJson());
 }
 
 napi_value PlayerPause(napi_env env, napi_callback_info /*info*/) {
     AudioPlayer *player = EnsurePlayer();
-    if (player->Pause() != 0) return ErrorJson(env, player->LastError());
+    if (player->Pause() != 0) return ResultError(env, player->LastError());
     OH_LOG_INFO(LOG_APP, "[player] pause");
-    return MakeString(env, player->StatusJson());
+    return MakeResult(env, true, player->StatusJson());
 }
 
 napi_value PlayerStop(napi_env env, napi_callback_info /*info*/) {
     AudioPlayer *player = EnsurePlayer();
     player->Stop();
     OH_LOG_INFO(LOG_APP, "[player] stop");
-    return MakeString(env, player->StatusJson());
+    return MakeResult(env, true, player->StatusJson());
 }
 
 napi_value PlayerStatus(napi_env env, napi_callback_info /*info*/) {
     AudioPlayer *player = EnsurePlayer();
-    return MakeString(env, player->StatusJson());
+    return MakeResult(env, true, player->StatusJson());
 }
 
 napi_value PlayerRelease(napi_env env, napi_callback_info /*info*/) {
@@ -218,7 +238,7 @@ napi_value PlayerRelease(napi_env env, napi_callback_info /*info*/) {
         g_player.reset();
     }
     OH_LOG_INFO(LOG_APP, "[player] release");
-    return MakeString(env, "{\"state\":\"idle\"}");
+    return MakeResult(env, true, "{\"state\":\"idle\"}");
 }
 
 napi_value Init(napi_env env, napi_value exports) {

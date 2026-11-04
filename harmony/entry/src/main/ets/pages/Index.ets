@@ -85,9 +85,17 @@ struct Index {
     try {
       const src = await this.ensureSample('play.m4a');
       hilog.info(DOMAIN, TAG, 'onPlay: 内置样例 path=%{public}s', src);
-      const openRes: string = native.playerOpen(src);
-      const playRes: string = native.playerPlay();
-      this.status = `内置样例 play.m4a\nopen: ${openRes}\nplay: ${playRes}`;
+      const openR = native.playerOpen(src);
+      if (!openR.ok) {
+        this.status = `打开失败: ${openR.data}`;
+        return;
+      }
+      const playR = native.playerPlay();
+      if (!playR.ok) {
+        this.status = `播放失败: ${playR.data}`;
+        return;
+      }
+      this.status = `内置样例 play.m4a\nplay: ${playR.data}`;
       this.startPolling();
     } catch (e) {
       this.status = `异常: ${JSON.stringify(e)}`;
@@ -98,7 +106,7 @@ struct Index {
   onStop(): void {
     try {
       this.stopPolling();
-      this.status = native.playerStop();
+      this.status = native.playerStop().data;
       hilog.info(DOMAIN, TAG, 'onStop');
     } catch (e) {
       this.status = `异常: ${JSON.stringify(e)}`;
@@ -143,13 +151,19 @@ struct Index {
     hilog.info(DOMAIN, TAG, 'picked uri=%{public}s', uri);
 
     let fd = -1;
-    let openRes = '';
+    let openData = '';
     try {
       const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
       fd = file.fd;
       hilog.info(DOMAIN, TAG, 'fs.openSync ok, fd=%{public}d', fd);
       try {
-        openRes = native.playerOpenFd(fd);
+        const openR = native.playerOpenFd(fd);
+        openData = openR.data;
+        if (!openR.ok) {
+          this.status = `解码器打开失败：${openR.data}`;
+          hilog.error(DOMAIN, TAG, 'playerOpenFd !ok: %{public}s', openR.data);
+          return;
+        }
       } finally {
         fs.closeSync(file);
       }
@@ -160,20 +174,15 @@ struct Index {
       return;
     }
 
-    hilog.info(DOMAIN, TAG, 'playerOpenFd -> %{public}s', openRes);
-    if (openRes.includes('"error"')) {
-      this.status = `解码器打开失败：${openRes}`;
-      return;
-    }
-
+    hilog.info(DOMAIN, TAG, 'playerOpenFd ok: %{public}s', openData);
     try {
-      const playRes: string = native.playerPlay();
-      hilog.info(DOMAIN, TAG, 'playerPlay -> %{public}s', playRes);
-      if (playRes.includes('"error"')) {
-        this.status = `播放启动失败：${playRes}`;
+      const playR = native.playerPlay();
+      hilog.info(DOMAIN, TAG, 'playerPlay -> ok=%{public}s', String(playR.ok));
+      if (!playR.ok) {
+        this.status = `播放启动失败：${playR.data}`;
         return;
       }
-      this.status = `file: ${uri}\nplay: ${playRes}`;
+      this.status = `file: ${uri}\nplay: ${playR.data}`;
       this.startPolling();
     } catch (e) {
       const msg = JSON.stringify(e);
@@ -185,7 +194,7 @@ struct Index {
   startPolling(): void {
     this.stopPolling();
     this.timer = setInterval(() => {
-      this.status = native.playerStatus();
+      this.status = native.playerStatus().data;
     }, 500);
   }
 
