@@ -16,14 +16,12 @@
 #include <ohaudio/native_audiostream_base.h>
 
 // M2 的最小播放器：解码线程 + 环形缓冲 + OHAudio 数据写入回调。
-// 输出格式固定 S16LE / 48 kHz / 2ch —— 任何源都在 swr 里归一化，
-// 这样 OHAudio 的配置不用跟着源变，播放器状态机简单。
+// 输出格式固定 S16LE / 48 kHz / 2ch —— 任何源都在 swr 里归一化。
 class AudioPlayer {
 public:
     AudioPlayer();
     ~AudioPlayer();
 
-    // 打开文件并建好 renderer；成功返回 0
     int Open(const std::string &path);
     int Play();
     int Pause();
@@ -31,7 +29,7 @@ public:
     void Release();
 
     std::string StatusJson() const;
-    const std::string &LastError() const { return err_; }
+    std::string LastError() const;
 
 private:
     static int32_t OnWriteDataCb(OH_AudioRenderer *renderer, void *userData,
@@ -39,9 +37,9 @@ private:
     int FillAudio(uint8_t *buf, int32_t size);
     void DecodeLoop();
     int BuildRenderer();
+    int SelfCheck();  // 用流式路径整解一遍算哈希，用来和桌面参考值对拍
     void SetError(const std::string &what);
 
-    // 环形缓冲（单读单写，都加锁，量级小无所谓）
     size_t RingWrite(const uint8_t *data, size_t len);
     size_t RingRead(uint8_t *data, size_t len);
     size_t RingUsed() const;
@@ -50,11 +48,13 @@ private:
     std::unique_ptr<AudioDecoder> decoder_;
     OH_AudioRenderer *renderer_ = nullptr;
     std::thread thread_;
+
     std::atomic<bool> running_{false};
-    std::atomic<bool> finished_{false};
-    std::atomic<uint64_t> underruns_{0};
-    std::atomic<uint64_t> playedBytes_{0};
-    std::atomic<int> state_{0};  // 0 idle / 1 playing / 2 paused / 3 stopped
+    std::atomic<bool> decoderEof_{false};
+    std::atomic<bool> gotFirstData_{false};
+    std::atomic<int> state_{0};              // 0 idle / 1 playing / 2 paused / 3 stopped
+    std::atomic<uint64_t> gaps_{0};          // 我们主动补静音的缺口次数
+    std::atomic<uint64_t> callbackCount_{0}; // 回调次数（诊断用）
 
     mutable std::mutex ringMutex_;
     std::vector<uint8_t> ring_;
@@ -62,9 +62,23 @@ private:
     size_t ringWrite_ = 0;
     size_t ringUsed_ = 0;
 
+    // 渲染器实际参数（构建后用 Get* 回读，确认配置真的生效）
+    int rendererRate_ = 0;
+    int rendererChannels_ = 0;
+    int rendererFrameSize_ = 0;
+    int rendererFormat_ = 0;
+    int rendererEncoding_ = 0;
+
+    // 流式解码自检结果
+    std::string pcmHash_;
+    int64_t pcmBytes_ = 0;
+    int pcmPeak_ = 0;
+
     std::string path_;
     std::string codec_;
     int64_t durationMs_ = 0;
+
+    mutable std::mutex errMutex_;
     std::string err_;
 };
 

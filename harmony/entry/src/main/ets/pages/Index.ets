@@ -74,7 +74,7 @@ struct Index {
 
   async onPlay(): Promise<void> {
     try {
-      const src = await this.ensureSample('test.m4a');
+      const src = await this.ensureSample('play.m4a');
       const openRes: string = native.playerOpen(src);
       const playRes: string = native.playerPlay();
       this.status = `open: ${openRes}\nplay: ${playRes}`;
