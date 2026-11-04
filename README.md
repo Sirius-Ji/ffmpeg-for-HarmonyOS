@@ -1,7 +1,7 @@
 # ffmpeg-for-HarmonyOS
 
-面向 **OpenHarmony / HarmonyOS NEXT** 的 FFmpeg 音视频基础库（**基座**）。
-目标不是做个播放器 App，而是把它做成能被别人直接集成的三方库，最终进入 OpenHarmony 供应链（TPC / [tpc_c_cplusplus](https://gitee.com/openharmony-sig/tpc_c_cplusplus)）。
+可开箱即用的面向 **OpenHarmony / HarmonyOS NEXT** 的纯血鸿蒙 FFmpeg 音视频基础库（**基座**）。
+目标不是toC的播放器 App，而是面向鸿蒙开发者的能被直接集成的三方库，最终进入 OpenHarmony 供应链（TPC / [tpc_c_cplusplus](https://gitee.com/openharmony-sig/tpc_c_cplusplus)）。
 
 - 上游：FFmpeg `n9.0`（commit `d32b387`），交叉编译到 `aarch64-linux-ohos` / `x86_64-linux-ohos`
 - 产物：带 SONAME 的动态库 + 完整头文件，`64 KB` 级别的集成成本（4 个 IMPORTED 目标）
@@ -27,13 +27,20 @@
 | 字幕 / 加密 / DRM | ❌ | 未编入 |
 | 滤镜 | ❌ | `libavfilter` 编进来了但 **filter 未启用**（`--disable-everything` 的副作用），要用得改构建开关重编 |
 
-**明确不做的**：UI、播放器状态机之外任何业务封装、命令行工具（OpenHarmony 也不允许 app fork+exec）。
+**明确不做的：UI、播放器状态机之外任何业务封装、命令行工具**（OpenHarmony 也不允许 app fork+exec）。
 
 ---
 
 ## 2. 集成到现有工程（CMake）
 
-假设你把 release 包解压到工程的 `third_party/ffmpeg-ohos/<abi>/`（`<abi>` 为 `arm64-v8a` 或 `x86_64`）：
+从 Release 下载对应 ABI 的包，解压到工程的 `third_party/ffmpeg-ohos/<abi>/`：
+
+| Release 包 | 解压到 |
+| --- | --- |
+| `ffmpeg-n9.0-ohos-arm64-v8a.zip` | `third_party/ffmpeg-ohos/arm64-v8a/` |
+| `ffmpeg-n9.0-ohos-x86_64.zip` | `third_party/ffmpeg-ohos/x86_64/` |
+
+解压后每个目录里是 `include/` 和 `lib/`（4 个带 SONAME 的 `.so`）：
 
 ```cmake
 set(FF_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg-ohos/${OHOS_ARCH})
@@ -100,11 +107,14 @@ C++ 侧的参考实现（解封装 → 软解 → 重采样 → OHAudio 播放�
                   └─ 每 2 秒打一行 [player] perf
 ```
 
-性能日志长这样（HiLog，tag `FFM1`）：
+性能日志长这样（HiLog，tag `FFM1`；下面数字是示例，实测值随设备和文件变化）：
 
 ```
-I FFM1 : [player] perf decode_avg=0.045ms/frame calls=312 cpu=18% rss=48213KB ring=180KB written=12288KB
+I FFM1 : [player] perf decode_avg=0.003ms/frame calls=312 cpu=18% rss=48213KB ring=180KB written=12288KB
 ```
+
+> 48 kHz 输出的实时预算是 **20.8 µs/帧**（1/48000 秒）。0.003 ms ≈ 3 µs，
+> 相当于只吃掉约 15% 的单核实时预算——192 kHz 源经 4:1 重采样之后，性能冗余依然很大。
 
 `playerStatus()` 返回的 JSON 里可直接读这些量：
 
