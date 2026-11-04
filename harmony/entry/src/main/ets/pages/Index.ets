@@ -1,7 +1,11 @@
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 // NAPI 模块：libentry.so，C 侧 nm_modname = "entry"
 import native from 'libentry.so';
+
+const DOMAIN = 0xFF01;
+const TAG = 'FFMUI';
 
 @Entry
 @Component
@@ -22,7 +26,7 @@ struct Index {
         .fontWeight(FontWeight.Bold)
 
       Row({ space: 12 }) {
-        Button('Play')
+        Button('Play（内置样例）')
           .onClick(() => {
             this.onPlay();
           })
@@ -80,12 +84,14 @@ struct Index {
   async onPlay(): Promise<void> {
     try {
       const src = await this.ensureSample('play.m4a');
+      hilog.info(DOMAIN, TAG, 'onPlay: 内置样例 path=%{public}s', src);
       const openRes: string = native.playerOpen(src);
       const playRes: string = native.playerPlay();
-      this.status = `open: ${openRes}\nplay: ${playRes}`;
+      this.status = `内置样例 play.m4a\nopen: ${openRes}\nplay: ${playRes}`;
       this.startPolling();
     } catch (e) {
       this.status = `异常: ${JSON.stringify(e)}`;
+      hilog.error(DOMAIN, TAG, 'onPlay failed: %{public}s', JSON.stringify(e));
     }
   }
 
@@ -93,40 +99,86 @@ struct Index {
     try {
       this.stopPolling();
       this.status = native.playerStop();
+      hilog.info(DOMAIN, TAG, 'onStop');
     } catch (e) {
       this.status = `异常: ${JSON.stringify(e)}`;
     }
   }
 
   // 系统文件选择器 → URI → fd → native（不复制文件，直接读原文件）
+  // 注意：这里没有任何"失败就播样例"的兜底；任何一步失败都停在那里并显示原因。
   async pickAndPlay(): Promise<void> {
+    // 先清场：停掉可能正在播的会话，并停掉状态轮询，
+    // 否则 500ms 一次的轮询会把错误信息刷掉，看起来像"还在播旧音频"。
+    this.stopPolling();
+    try {
+      native.playerStop();
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'playerStop before pick failed: %{public}s', JSON.stringify(e));
+    }
+    this.status = '正在打开文件选择器…';
+    hilog.info(DOMAIN, TAG, 'pickAndPlay: start');
+
+    let uri = '';
     try {
       const ctx = getContext(this) as common.UIAbilityContext;
       const documentPicker = new picker.DocumentViewPicker(ctx);
       const options = new picker.DocumentSelectOptions();
       options.maxSelectNumber = 1;
       const uris: string[] = await documentPicker.select(options);
+      hilog.info(DOMAIN, TAG, 'picker returned %{public}d uri(s)', uris.length);
       if (uris.length === 0) {
-        this.status = '没有选择文件';
+        this.status = '已取消选择：没有播放任何文件';
         return;
       }
-      const uri = uris[0];
+      uri = uris[0];
+    } catch (e) {
+      const msg = JSON.stringify(e);
+      this.status = `文件选择器失败：${msg}`;
+      hilog.error(DOMAIN, TAG, 'picker failed: %{public}s', msg);
+      return;
+    }
+
+    this.status = `已选择：${uri}\n正在打开…`;
+    hilog.info(DOMAIN, TAG, 'picked uri=%{public}s', uri);
+
+    let fd = -1;
+    let openRes = '';
+    try {
       const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
-      let openRes: string = '';
+      fd = file.fd;
+      hilog.info(DOMAIN, TAG, 'fs.openSync ok, fd=%{public}d', fd);
       try {
-        openRes = native.playerOpenFd(file.fd);
+        openRes = native.playerOpenFd(fd);
       } finally {
         fs.closeSync(file);
       }
-      if (openRes.includes('"error"')) {
-        this.status = `打开失败: ${openRes}`;
+    } catch (e) {
+      const msg = JSON.stringify(e);
+      this.status = `打开文件失败（fd=${fd}）：${msg}`;
+      hilog.error(DOMAIN, TAG, 'open fd failed: %{public}s', msg);
+      return;
+    }
+
+    hilog.info(DOMAIN, TAG, 'playerOpenFd -> %{public}s', openRes);
+    if (openRes.includes('"error"')) {
+      this.status = `解码器打开失败：${openRes}`;
+      return;
+    }
+
+    try {
+      const playRes: string = native.playerPlay();
+      hilog.info(DOMAIN, TAG, 'playerPlay -> %{public}s', playRes);
+      if (playRes.includes('"error"')) {
+        this.status = `播放启动失败：${playRes}`;
         return;
       }
-      const playRes: string = native.playerPlay();
-      this.status = `file: ${uri}\nopen: ${openRes}\nplay: ${playRes}`;
+      this.status = `file: ${uri}\nplay: ${playRes}`;
       this.startPolling();
     } catch (e) {
-      this.status = `异常: ${JSON.stringify(e)}`;
+      const msg = JSON.stringify(e);
+      this.status = `播放异常：${msg}`;
+      hilog.error(DOMAIN, TAG, 'playerPlay failed: %{public}s', msg);
     }
   }
 

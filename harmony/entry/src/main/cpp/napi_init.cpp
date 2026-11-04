@@ -180,6 +180,7 @@ napi_value PlayerOpenFd(napi_env env, napi_callback_info info) {
     }
 
     AudioPlayer *player = EnsurePlayer();
+    OH_LOG_INFO(LOG_APP, "[player] playerOpenFd fd=%{public}d", fd);
     if (player->OpenFd(fd) != 0) return ErrorJson(env, player->LastError());
 
     OH_LOG_INFO(LOG_APP, "[player] open via fd %{public}d", fd);
