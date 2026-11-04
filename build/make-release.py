@@ -25,16 +25,16 @@ OUTDIR = os.path.join(ROOT, "dist", "release")
 CHECKER = os.path.join(ROOT, "build", "check-release.py")
 ABIS = ("arm64-v8a", "x86_64")
 
-# v0.1.1：libavfilter 不随包发布（滤镜开关仍在编译里，但不作为发布能力）
-LIB_NAMES = ["avcodec", "avformat", "avutil", "swresample"]
+# v0.1.1：libavfilter 不随包发布；libmp3lame 是 MP3 编码的运行时依赖，必须一起发
+LIB_NAMES = ["avcodec", "avformat", "avutil", "swresample", "mp3lame"]
 LIB_RE = re.compile(r"^lib(%s)\.so\.(\d+)$" % "|".join(LIB_NAMES))
 
 COMPONENTS = {
     "decoders": "aac ac3 alac ape dca flac mp3 mp3float opus pcm_s16le pcm_s24le pcm_s32le wmav2 h264_oh hevc_oh",
-    "encoders": "aac alac flac pcm_s16le pcm_s24le",
-    "muxers": "mp4 mov ipod mp3 flac wav matroska adts",
+    "encoders": "aac alac flac libmp3lame opus pcm_s16le pcm_s24le",
+    "muxers": "mp4 mov ipod mp3 flac wav matroska adts ogg opus",
     "parsers": "aac ac3 dca flac mpegaudio opus",
-    "notes": "不包含 MP3 编码（未编入 libmp3lame）；MP3 仅支持解码与封装",
+    "notes": "MP3 编码走 libmp3lame（LGPL-2.1）；Opus 编码为 FFmpeg 原生实验性实现，需 strict_std_compliance=EXPERIMENTAL",
 }
 
 

@@ -44,13 +44,17 @@ cd <repo>
 --enable-avformat --enable-avcodec --enable-avutil --enable-swresample
 --enable-ohcodec
 --enable-decoder=h264_oh,hevc_oh,aac,ac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2
---enable-encoder=aac,alac,flac,pcm_s16le,pcm_s24le
+--enable-encoder=aac,alac,flac,libmp3lame,opus,pcm_s16le,pcm_s24le
+--enable-libmp3lame
 --enable-parser=aac,ac3,dca,flac,mpegaudio,opus
 --enable-demuxer=mov,matroska,ogg,flac,ape,dsf,wav,mp3,aac,tta,wv,caf,asf
---enable-muxer=mp4,mov,ipod,mp3,flac,wav,matroska,adts
+--enable-muxer=mp4,mov,ipod,mp3,flac,wav,matroska,adts,ogg,opus
 --enable-bsf=aac_adtstoasc
 --enable-protocol=file
 ```
+
+LAME 由 `build/build-lame.sh` 单独交叉编译（静态归档 → clang 手动链 `libmp3lame.so.0`），
+FFmpeg configure 通过 `--extra-cflags/-ldflags` 指向 `prebuilt/<abi>` 下的头文件与库。
 
 ## 踩到的坑（都是真机实测）
 

@@ -78,8 +78,8 @@ build_one() {
     --strip="$tdir/strip" \
     --host-cc="${HOSTCC:-$tdir/cc}" \
     $SYSFLAG \
-    --extra-cflags="-D__MUSL__" \
-    --extra-ldflags="-Wl,-z,max-page-size=16384" \
+    --extra-cflags="-D__MUSL__ -I$OUT/$abi/include" \
+    --extra-ldflags="-Wl,-z,max-page-size=16384 -L$OUT/$abi/lib" \
     --prefix="$OUT/$abi" \
     --enable-shared --disable-static \
     --disable-programs --disable-doc --disable-avdevice --disable-avfilter \
@@ -89,10 +89,11 @@ build_one() {
     --enable-avformat --enable-avcodec --enable-avutil --enable-swresample \
     --enable-ohcodec \
     --enable-decoder=h264_oh,hevc_oh,aac,ac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2 \
-    --enable-encoder=aac,alac,flac,pcm_s16le,pcm_s24le \
+    --enable-encoder=aac,alac,flac,pcm_s16le,pcm_s24le,libmp3lame,opus \
     --enable-parser=aac,ac3,dca,flac,mpegaudio,opus \
     --enable-demuxer=mov,matroska,ogg,flac,ape,dsf,wav,mp3,aac,tta,wv,caf,asf \
-    --enable-muxer=mp4,mov,ipod,mp3,flac,wav,matroska,adts \
+    --enable-muxer=mp4,mov,ipod,mp3,flac,wav,matroska,adts,ogg,opus \
+    --enable-libmp3lame \
     --enable-bsf=aac_adtstoasc \
     --enable-protocol=file \
     $extra \

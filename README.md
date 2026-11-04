@@ -3,14 +3,16 @@
 > **v0.1.1 Alpha · 早期测试版**
 >
 > 解码 / 播放链路已真机验证（192 kHz/2ch FLAC 无卡顿、无爆音），**v0.1.1 起加入基础转码能力**
-> （音频编码 `aac/alac/flac/pcm_s16le/pcm_s24le`，封装 `mp4/mov/ipod/mp3/flac/wav/matroska/adts`）。
-> **暂不支持 MP3 编码**（未编入 libmp3lame）。**API 仍可能变更**，欢迎试用、集成、提 Issue 和 PR。
+> （音频编码 `aac/alac/flac/mp3(libmp3lame)/opus/pcm_s16le/pcm_s24le`，
+> 封装 `mp4/mov/ipod/mp3/flac/wav/matroska/adts/ogg/opus`）。
+> **API 仍可能变更**，欢迎试用、集成、提 Issue 和 PR。
 
 可开箱即用的面向 **OpenHarmony / HarmonyOS NEXT** 的纯血鸿蒙 FFmpeg 音视频基础库（**基座**）。
 目标不是toC的播放器 App，而是面向鸿蒙开发者的能被直接集成的三方库，最终进入 OpenHarmony 供应链（TPC / [tpc_c_cplusplus](https://gitee.com/openharmony-sig/tpc_c_cplusplus)）。
 
 - 上游：FFmpeg `n9.0`（commit `d32b387`），交叉编译到 `aarch64-linux-ohos` / `x86_64-linux-ohos`
-- 产物：带 SONAME 的动态库 + 完整头文件，`64 KB` 级别的集成成本（4 个 IMPORTED 目标）
+- 产物：带 SONAME 的动态库 + 完整头文件，**5 个 `.so`**（4 个 FFmpeg + `libmp3lame`），
+  CMake 集成成本 `64 KB` 级别（4 个 IMPORTED 目标 + `libmp3lame` 作为运行时依赖）
 - 许可：**LGPL-2.1-or-later**（未启用 GPL / nonfree），见 [NOTICE.md](NOTICE.md)
 - 状态：M0 交叉编译 ✅、M1 真机解码 ✅、M2 播放链路真机验证 ✅、**v0.1.1 转码能力已编入**（音频编码 / 封装）、M3 平台硬解路由 ⏳
 
@@ -24,8 +26,8 @@
 | --- | --- | --- |
 | 容器解封装 | ✅ | `mov/mp4/m4a`、`matroska`、`ogg`、`flac`、`ape`、`dsf`、`wav`、`mp3`、`aac(ADTS)`、`tta`、`wv`、`caf`、`asf` |
 | 音频软解 | ✅ | `aac` `alac` `ape` `ac3` `dca(DTS)` `flac` `mp3` `opus` `pcm_s16le` `wmav2`，统一输出 S16 交错 |
-| 音频编码 | ✅ | `aac` / `alac` / `flac` / `pcm_s16le` / `pcm_s24le`（原生实现；**不含 MP3 编码**，需要 libmp3lame） |
-| 容器封装 | ✅ | `mp4` / `mov` / `ipod`（M4A 兼容性最好） / `mp3` / `flac` / `wav` / `matroska` / `adts` |
+| 音频编码 | ✅ | `aac` / `alac` / `flac` / `mp3`（libmp3lame）/ `opus` / `pcm_s16le` / `pcm_s24le` |
+| 容器封装 | ✅ | `mp4` / `mov` / `ipod`（M4A 兼容性最好） / `mp3` / `flac` / `wav` / `matroska` / `adts` / `ogg` / `opus` |
 | 重采样 / 声道归一 | ✅ | `libswresample`，任意输入 → 指定采样率/声道（默认 48 kHz / 2ch） |
 | 音频播放输出 | ✅ | `OHAudio`（数据写入回调）；demo 支持系统文件选择器选歌、fd 直读、48 kHz / 2ch / S16 输出，含解码耗时 / CPU / RSS 日志 |
 | 视频硬解封装 | ✅（编译进） | `h264_oh` / `hevc_oh`，走 `--enable-ohcodec`；需要调用方提供 surface，demo 未接 |
@@ -50,7 +52,7 @@
 | `ffmpeg-n9.0-ohos-arm64-v8a.zip` | `third_party/ffmpeg-ohos/arm64-v8a/` |
 | `ffmpeg-n9.0-ohos-x86_64.zip` | `third_party/ffmpeg-ohos/x86_64/` |
 
-解压后每个目录里是 `include/` 和 `lib/`（4 个带 SONAME 的 `.so`）：
+解压后每个目录里是 `include/` 和 `lib/`（**5 个带 SONAME 的 `.so`**：4 个 FFmpeg + `libmp3lame`）：
 
 ```cmake
 set(FF_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg-ohos/${OHOS_ARCH})
@@ -89,6 +91,7 @@ entry/libs/arm64-v8a/libavcodec.so.63
 entry/libs/arm64-v8a/libavformat.so.63
 entry/libs/arm64-v8a/libavutil.so.61
 entry/libs/arm64-v8a/libswresample.so.7
+entry/libs/arm64-v8a/libmp3lame.so.0      # MP3 编码的运行时依赖（不开 MP3 编码可不带）
 ```
 
 **三条硬性约束**（踩过的坑，别重犯）：
@@ -112,8 +115,11 @@ fs.closeSync(inFile);
 fs.closeSync(outFile);
 ```
 
-demo 里的"转码测试"按钮会把内置 `play.m4a` 转成 `filesDir/transcoded.m4a` 并直接播放结果，
-转完能在状态栏看到输入/输出参数、包数、字节数。
+demo 里有三个按钮（**转码 → AAC / MP3 / Opus**），会把内置 `play.m4a` 转成
+`filesDir/transcoded.{m4a,mp3,opus}` 并直接播放结果，状态栏能看到输入/输出参数、包数、字节数。
+
+> LAME 交叉编译、三种编码器帧长差异、`avcodec_get_supported_config` 这些坑，
+> 完整记录在 [docs/06-transcode.md](docs/06-transcode.md)。
 
 ---
 
@@ -176,8 +182,8 @@ python build/make-release.py
 
 ```
 prebuilt/<abi>/
-├── include/lib{avcodec,avformat,avutil,swresample}/   # 头文件
-└── lib/libavcodec.so.63  libavformat.so.63  libavutil.so.61  libswresample.so.7
+├── include/lib{avcodec,avformat,avutil,swresample}/ + include/lame/   # 头文件
+└── lib/libavcodec.so.63  libavformat.so.63  libavutil.so.61  libswresample.so.7  libmp3lame.so.0
 ```
 
 ---
@@ -188,7 +194,8 @@ prebuilt/<abi>/
   产物里没有 x264/x265 等 GPL 组件。`configure` 输出可自证：`License: LGPL version 2.1 or later`。
 - 产物是**动态库**，应用动态链接即可满足 LGPL-2.1 §6(b) 的"共享库机制"路径；闭源商用不需要公开自己的代码。
 - 分发二进制时请附上 [LICENSES/LGPL-2.1.txt](LICENSES/LGPL-2.1.txt) 与 [NOTICE.md](NOTICE.md)，并提供 FFmpeg 源码获取方式。
-- **专利与许可分开算**：AAC / MP3 等编解码专利池授权与 LGPL 无关，商用请自行评估。
+- **专利与许可分开算**：AAC / MP3 / Opus 等编解码专利池授权与 LGPL 无关，商用请自行评估。
+- `libmp3lame`（LAME 3.100）同样是 **LGPL-2.1**，以动态库形式随包发布，源码获取方式见 [NOTICE.md](NOTICE.md)。
 
 ---
 
@@ -222,6 +229,9 @@ LICENSES/       # 第三方许可证全文
 - 只支持 **file / fd 输入**；网络流要自己喂自定义 `AVIOContext`。
 - 播放器是**单实例**、**无 seek**（大文件只能从头播）、无后台播放；暂停用 `OH_AudioRenderer_Pause`。
 - 44.1 kHz 源会重采样到 48 kHz（OHAudio 输出固定），需要位真还原请用 M1 的整文件解码接口。
-- **MP3 编码不可用**：没编 `libmp3lame`（需要额外交叉编译该库）。`mp3` muxer 只能做封装/流拷贝。
+- **MP3 编码走 libmp3lame 3.100**（LGPL-2.1，动态库已随包发布），不是 FFmpeg 原生实现。
+- **Opus 编码是 FFmpeg 原生实验性实现**：调用 `avcodec_open2` 前必须设
+  `avctx->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL`，且只支持 48 kHz / 2ch。
+  帧长对齐到 960（20 ms）；我们的转码器按 `enc->frame_size` 切片，不写死。
 - 视频只编了硬解封装（`h264_oh` / `hevc_oh`），**没有视频编码、也没有视频软解**。
 - 大文件建议用 demo 里的"选歌播放"（picker → URI → fd），不要复制进沙箱：`playerOpenFd` 内部 `dup`，调用方拿到返回值即可关自己的 fd。

@@ -41,11 +41,26 @@ struct Index {
           this.pickAndPlay();
         })
 
-      Button(this.busy ? '转码中…' : '转码测试（play.m4a → AAC m4a）')
-        .enabled(!this.busy)
-        .onClick(() => {
-          this.runTranscode();
-        })
+      Row({ space: 8 }) {
+        Button(this.busy ? '转码中…' : '转码 → AAC')
+          .fontSize(13)
+          .enabled(!this.busy)
+          .onClick(() => {
+            this.runTranscode('aac');
+          })
+        Button('转码 → MP3')
+          .fontSize(13)
+          .enabled(!this.busy)
+          .onClick(() => {
+            this.runTranscode('mp3');
+          })
+        Button('转码 → Opus')
+          .fontSize(13)
+          .enabled(!this.busy)
+          .onClick(() => {
+            this.runTranscode('opus');
+          })
+      }
 
       Text(this.status)
         .fontSize(12)
@@ -197,8 +212,8 @@ struct Index {
     }
   }
 
-  // 转码示例：内置样例 play.m4a → AAC(ipod/m4a)，完成后直接播放结果
-  async runTranscode(): Promise<void> {
+  // 转码示例：内置样例 play.m4a → aac/mp3/opus，完成后直接播放结果
+  async runTranscode(format: string): Promise<void> {
     this.stopPolling();
     try {
       native.playerStop();
@@ -206,23 +221,24 @@ struct Index {
       hilog.warn(DOMAIN, TAG, 'playerStop before transcode failed: %{public}s', JSON.stringify(e));
     }
     this.busy = true;
-    this.status = '转码中…';
+    this.status = `转码中（${format}）…`;
     try {
       const ctx = getContext(this) as common.UIAbilityContext;
       const src = await this.ensureSample('play.m4a');
-      const dst = `${ctx.filesDir}/transcoded.m4a`;
+      const ext = format === 'aac' ? 'm4a' : format;
+      const dst = `${ctx.filesDir}/transcoded.${ext}`;
       const inFile = fs.openSync(src, fs.OpenMode.READ_ONLY);
       const outFile = fs.openSync(dst, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
       try {
-        hilog.info(DOMAIN, TAG, 'transcode start %{public}s -> %{public}s', src, dst);
-        const res = native.transcodeToAac(inFile.fd, outFile.fd);
+        hilog.info(DOMAIN, TAG, 'transcode start %{public}s -> %{public}s (%{public}s)', src, dst, format);
+        const res = native.transcodeTo(inFile.fd, outFile.fd, format);
         hilog.info(DOMAIN, TAG, 'transcode result ok=%{public}s data=%{public}s', String(res.ok), res.data);
         if (!res.ok) {
-          this.status = `转码失败: ${res.data}`;
+          this.status = `转码失败（${format}）: ${res.data}`;
           return;
         }
         const st = fs.statSync(dst);
-        this.status = `转码成功: ${st.size} B\n${dst}\n${res.data}`;
+        this.status = `转码成功（${format}）: ${st.size} B\n${dst}\n${res.data}`;
 
         // 立刻播放转码结果，证明产物可用
         const openR = native.playerOpen(dst);
@@ -239,7 +255,7 @@ struct Index {
       }
     } catch (e) {
       const msg = JSON.stringify(e);
-      this.status = `转码异常: ${msg}`;
+      this.status = `转码异常（${format}）: ${msg}`;
       hilog.error(DOMAIN, TAG, 'transcode failed: %{public}s', msg);
     } finally {
       this.busy = false;

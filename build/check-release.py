@@ -28,14 +28,14 @@ REQUIRED = {
         "aac", "ac3", "alac", "ape", "dca", "flac", "mp3", "mp3float",
         "opus", "pcm_s16le", "pcm_s24le", "pcm_s32le", "wmav2",
     ],
-    "encoder": ["aac", "alac", "flac", "pcm_s16le", "pcm_s24le"],
-    "muxer": ["mp4", "mov", "ipod", "mp3", "flac", "wav", "matroska", "adts"],
+    "encoder": ["aac", "alac", "flac", "libmp3lame", "pcm_s16le", "pcm_s24le", "opus"],
+    "muxer": ["mp4", "mov", "ipod", "mp3", "flac", "wav", "matroska", "adts", "ogg", "opus"],
     "demuxer": ["mov", "matroska", "ogg", "flac", "ape", "dsf", "wav", "mp3", "aac", "tta", "wv", "caf", "asf"],
     "bsf": ["aac_adtstoasc"],
 }
 
-# 发布包必须带的库（libavfilter 不发布）
-MUST_SHIP = ("avcodec", "avformat", "avutil", "swresample")
+# 发布包必须带的库（libavfilter 不发布；libmp3lame 是外部依赖）
+MUST_SHIP = ("avcodec", "avformat", "avutil", "swresample", "mp3lame")
 BANNED_IN_README = ("libavfilter", "avfilter")
 
 TAIL = {"decoder": "DECODER", "encoder": "ENCODER", "muxer": "MUXER",
@@ -124,7 +124,8 @@ def check_zip(abi, failures):
             failures.append(f"[{abi}] 必需库缺失: lib{need}.so.*（未编译出来）")
 
     for hdr in ("include/libavcodec/avcodec.h", "include/libavformat/avformat.h",
-                "include/libavutil/avutil.h", "include/libswresample/swresample.h"):
+                "include/libavutil/avutil.h", "include/libswresample/swresample.h",
+                "include/lame/lame.h"):
         if hdr not in names:
             failures.append(f"[{abi}] 包里缺头文件: {hdr}")
 

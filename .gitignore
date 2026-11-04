@@ -1,6 +1,7 @@
 # ================= 构建 / 工具链（可重建，勿入库） =================
 .tools/
 third_party/ffmpeg/
+third_party/lame-3.100/
 prebuilt/
 dist/
 build-logs/
@@ -9,6 +10,8 @@ build-logs/
 # build/ 只提交脚本与源码；下面这些是 out-of-tree 中间产物
 build/arm64-v8a/
 build/x86_64/
+build/lame-arm64-v8a/
+build/lame-x86_64/
 build/napi/
 build/toolchain/
 build/build/

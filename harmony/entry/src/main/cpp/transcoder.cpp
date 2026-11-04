@@ -1,6 +1,7 @@
 #include "transcoder.h"
 
 #include <cstdio>
+#include <cstring>
 #include <sstream>
 
 #include <hilog/log.h>
@@ -11,6 +12,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/error.h>
 #include <libavutil/opt.h>
+#include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 }
 
@@ -23,12 +25,48 @@ namespace {
 
 constexpr int kOutRate = 48000;
 constexpr int kOutChannels = 2;
-constexpr int kOutBitrate = 128000;
 
 std::string AvErr(int err) {
     char buf[AV_ERROR_MAX_STRING_SIZE] = {0};
     av_strerror(err, buf, sizeof(buf));
     return std::string(buf);
+}
+
+// 输出档位：编码器 / 封装器 / 码率 / 是否实验性
+struct Profile {
+    const char *name;
+    enum AVCodecID codecId;
+    const char *muxer;
+    const char *container;
+    int bitrate;
+    bool experimental;
+};
+
+bool PickProfile(const std::string &format, Profile *p) {
+    if (format == "aac") {
+        *p = {"aac", AV_CODEC_ID_AAC, "mp4", "mp4/m4a", 128000, false};
+        return true;
+    }
+    if (format == "mp3") {
+        *p = {"mp3", AV_CODEC_ID_MP3, "mp3", "mp3", 192000, false};
+        return true;
+    }
+    if (format == "opus") {
+        *p = {"opus", AV_CODEC_ID_OPUS, "opus", "opus/ogg", 96000, true};
+        return true;
+    }
+    return false;
+}
+
+// FFmpeg n9.0 不再暴露 AVCodec::sample_fmts，改成查询 API
+enum AVSampleFormat PickSampleFormat(const AVCodecContext *ctx, const AVCodec *codec) {
+    const void *cfgs = nullptr;
+    int count = 0;
+    if (avcodec_get_supported_config(ctx, codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, &cfgs, &count) >= 0 &&
+        cfgs != nullptr && count > 0) {
+        return static_cast<const enum AVSampleFormat *>(cfgs)[0];
+    }
+    return AV_SAMPLE_FMT_FLTP;
 }
 
 // 所有资源集中在这里，析构时按依赖顺序释放
@@ -72,12 +110,17 @@ struct Ctx {
 
 }  // namespace
 
-int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err) {
+int TranscodeAudio(int srcFd, int dstFd, const std::string &format, std::string *summary, std::string *err) {
     auto fail = [&](const std::string &what) {
         if (err) *err = what;
         OH_LOG_ERROR(LOG_APP, "[transcode] %{public}s", what.c_str());
         return -1;
     };
+
+    Profile prof{};
+    if (!PickProfile(format, &prof)) return fail("unsupported format: " + format);
+    OH_LOG_INFO(LOG_APP, "[transcode] format=%{public}s muxer=%{public}s bitrate=%{public}d",
+                prof.name, prof.muxer, prof.bitrate);
 
     Ctx c;
     c.inFd = ::dup(srcFd);
@@ -115,11 +158,11 @@ int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err)
     ret = avcodec_open2(c.dec, decCodec, nullptr);
     if (ret < 0) return fail("decoder open: " + AvErr(ret));
 
-    // ---------- 输出：AAC + mp4(m4a) → fd ----------
-    ret = avformat_alloc_output_context2(&c.out, nullptr, "mp4", nullptr);
+    // ---------- 输出：编码器 + 封装器 → fd ----------
+    ret = avformat_alloc_output_context2(&c.out, nullptr, prof.muxer, nullptr);
     if (ret < 0 || c.out == nullptr) {
-        OH_LOG_ERROR(LOG_APP, "[transcode] alloc_output_context2(mp4) failed, ret=%{public}d (%{public}s)",
-                     ret, AvErr(ret).c_str());
+        OH_LOG_ERROR(LOG_APP, "[transcode] alloc_output_context2(%{public}s) failed, ret=%{public}d (%{public}s)",
+                     prof.muxer, ret, AvErr(ret).c_str());
         // 把已注册的 muxer 打出来，下次一眼看出到底编进去了什么
         char muxers[1024] = {0};
         size_t off = 0;
@@ -129,7 +172,7 @@ int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err)
             off += (size_t)snprintf(muxers + off, sizeof(muxers) - off, "%s ", of->name);
         }
         OH_LOG_ERROR(LOG_APP, "[transcode] available muxers: %{public}s", muxers);
-        return fail("alloc_output_context2(mp4) failed, ret=" + std::to_string(ret));
+        return fail("alloc_output_context2(" + std::string(prof.muxer) + ") failed, ret=" + std::to_string(ret));
     }
     auto *outBuf = static_cast<unsigned char *>(av_malloc(kIoBuf));
     if (outBuf == nullptr) return fail("av_malloc(out) failed");
@@ -139,18 +182,26 @@ int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err)
     c.out->pb = c.outAvio;
     c.out->flags |= AVFMT_FLAG_CUSTOM_IO;
 
-    const AVCodec *encCodec = avcodec_find_encoder(AV_CODEC_ID_AAC);
-    if (encCodec == nullptr) return fail("AAC encoder not compiled in");
+    const AVCodec *encCodec = avcodec_find_encoder(prof.codecId);
+    if (encCodec == nullptr) return fail(std::string(prof.name) + " encoder not compiled in");
     c.enc = avcodec_alloc_context3(encCodec);
     if (c.enc == nullptr) return fail("avcodec_alloc_context3(enc) failed");
     c.enc->sample_rate = kOutRate;
     av_channel_layout_default(&c.enc->ch_layout, kOutChannels);
-    c.enc->sample_fmt = AV_SAMPLE_FMT_FLTP;  // 原生 AAC 编码器只吃 fltp
-    c.enc->bit_rate = kOutBitrate;
+    c.enc->sample_fmt = PickSampleFormat(c.enc, encCodec);
+    c.enc->bit_rate = prof.bitrate;
     c.enc->time_base = AVRational{1, kOutRate};
+    if (prof.experimental) {
+        // Opus 原生编码器标了 AV_CODEC_CAP_EXPERIMENTAL，不设这个会被 avcodec_open2 拒绝
+        c.enc->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
+    }
     if (c.out->oformat->flags & AVFMT_GLOBALHEADER) c.enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     ret = avcodec_open2(c.enc, encCodec, nullptr);
-    if (ret < 0) return fail("AAC encoder open: " + AvErr(ret));
+    if (ret < 0) return fail(std::string(prof.name) + " encoder open: " + AvErr(ret));
+    OH_LOG_INFO(LOG_APP,
+                "[transcode] encoder=%{public}s fmt=%{public}d frame_size=%{public}d rate=%{public}d ch=%{public}d",
+                encCodec->name, (int)c.enc->sample_fmt, c.enc->frame_size, c.enc->sample_rate,
+                c.enc->ch_layout.nb_channels);
 
     AVStream *ost = avformat_new_stream(c.out, nullptr);
     if (ost == nullptr) return fail("avformat_new_stream failed");
@@ -246,7 +297,7 @@ int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err)
             const int take = (n - off) < room ? (n - off) : room;
             const int r = av_samples_copy(c.staging->extended_data,
                                           const_cast<uint8_t *const *>(data), pending, off, take,
-                                          kOutChannels, AV_SAMPLE_FMT_FLTP);
+                                          kOutChannels, (AVSampleFormat)c.enc->sample_fmt);
             if (r < 0) return r;
             pending += take;
             off += take;
@@ -327,7 +378,7 @@ int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err)
         if (ret < 0) return fail("encode swr flush: " + AvErr(ret));
     }
 
-    // 最后一帧可能不满 frame_size，AAC 编码器支持 SMALL_LAST_FRAME
+    // 最后一帧可能不满 frame_size；三个编码器都带 SMALL_LAST_FRAME，直接送
     ret = sendStaging();
     if (ret < 0) return fail("encode last frame: " + AvErr(ret));
     totalFrames = outPts;
@@ -346,15 +397,22 @@ int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err)
     std::ostringstream os;
     os << "{\"input\":{\"codec\":\"" << decCodec->name << "\",\"sampleRate\":" << c.dec->sample_rate
        << ",\"channels\":" << c.dec->ch_layout.nb_channels << "}"
-       << ",\"output\":{\"codec\":\"aac\",\"container\":\"mp4/m4a\",\"sampleRate\":" << kOutRate
-       << ",\"channels\":" << kOutChannels << ",\"bitRate\":" << kOutBitrate << "}"
+       << ",\"output\":{\"format\":\"" << prof.name << "\",\"codec\":\"" << encCodec->name
+       << "\",\"container\":\"" << prof.container << "\",\"sampleRate\":" << kOutRate
+       << ",\"channels\":" << kOutChannels << ",\"bitRate\":" << prof.bitrate << "}"
        << ",\"decodedFrames\":" << decodedFrames << ",\"outFrames\":" << totalFrames
        << ",\"packets\":" << totalPackets << ",\"bytes\":" << bytes
        << ",\"durationMs\":" << durationMs << "}";
     if (summary) *summary = os.str();
 
-    OH_LOG_INFO(LOG_APP, "[transcode] done in=%{public}d/%{public}d out=%{public}d/%{public}d bytes=%{public}lld frames=%{public}lld",
-                c.dec->sample_rate, c.dec->ch_layout.nb_channels, kOutRate, kOutChannels,
-                (long long)bytes, (long long)totalFrames);
+    OH_LOG_INFO(LOG_APP,
+                "[transcode] done format=%{public}s codec=%{public}s in=%{public}d/%{public}d out=%{public}d/%{public}d bytes=%{public}lld frames=%{public}lld",
+                prof.name, encCodec->name, c.dec->sample_rate, c.dec->ch_layout.nb_channels,
+                kOutRate, kOutChannels, (long long)bytes, (long long)totalFrames);
     return 0;
+}
+
+// 兼容旧调用：默认转 AAC
+int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err) {
+    return TranscodeAudio(srcFd, dstFd, "aac", summary, err);
 }
