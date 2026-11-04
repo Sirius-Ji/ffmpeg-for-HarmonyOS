@@ -102,7 +102,7 @@ C++ 侧的参考实现（解封装 → 软解 → 重采样 → OHAudio 播放�
 [`audio_player.cpp`](harmony/entry/src/main/cpp/audio_player.cpp)，可以直接抄。
 
 转码侧在 [`transcoder.cpp`](harmony/entry/src/main/cpp/transcoder.cpp)：解封装 → 软解 →
-重采样到 48 kHz/2ch → **AAC 编码** → **ipod（m4a）封装**，全程走 fd，不落临时文件：
+重采样到 48 kHz/2ch → **AAC 编码** → **mp4（m4a）封装**，全程走 fd，不落临时文件：
 
 ```ts
 const inFile = fs.openSync(src, fs.OpenMode.READ_ONLY);

@@ -113,9 +113,22 @@ int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err)
     ret = avcodec_open2(c.dec, decCodec, nullptr);
     if (ret < 0) return fail("decoder open: " + AvErr(ret));
 
-    // ---------- 输出：AAC + ipod(m4a) → fd ----------
-    ret = avformat_alloc_output_context2(&c.out, nullptr, "ipod", nullptr);
-    if (ret < 0 || c.out == nullptr) return fail("alloc_output_context2(ipod) failed");
+    // ---------- 输出：AAC + mp4(m4a) → fd ----------
+    ret = avformat_alloc_output_context2(&c.out, nullptr, "mp4", nullptr);
+    if (ret < 0 || c.out == nullptr) {
+        OH_LOG_ERROR(LOG_APP, "[transcode] alloc_output_context2(mp4) failed, ret=%{public}d (%{public}s)",
+                     ret, AvErr(ret).c_str());
+        // 把已注册的 muxer 打出来，下次一眼看出到底编进去了什么
+        char muxers[1024] = {0};
+        size_t off = 0;
+        void *iter = nullptr;
+        const AVOutputFormat *of = nullptr;
+        while ((of = av_muxer_iterate(&iter)) != nullptr && off + 40 < sizeof(muxers)) {
+            off += (size_t)snprintf(muxers + off, sizeof(muxers) - off, "%s ", of->name);
+        }
+        OH_LOG_ERROR(LOG_APP, "[transcode] available muxers: %{public}s", muxers);
+        return fail("alloc_output_context2(mp4) failed, ret=" + std::to_string(ret));
+    }
     auto *outBuf = static_cast<unsigned char *>(av_malloc(kIoBuf));
     if (outBuf == nullptr) return fail("av_malloc(out) failed");
     c.outAvio = avio_alloc_context(outBuf, kIoBuf, 1, (void *)(intptr_t)c.outFd,
