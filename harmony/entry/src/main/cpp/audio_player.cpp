@@ -1,5 +1,6 @@
 #include "audio_player.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -24,8 +25,10 @@ namespace {
 
 constexpr int kOutRate = 48000;
 constexpr int kOutChannels = 2;
-constexpr size_t kRingBytes = (size_t)kOutRate * kOutChannels * 2;  // 1 秒缓冲
-constexpr int kChunkFrames = 2048;                                  // 每次解码 2048 帧
+constexpr size_t kBytesPerSecond = (size_t)kOutRate * kOutChannels * 2;  // 192000 B/s
+constexpr size_t kRingBytes = 2 * kBytesPerSecond;                       // 2 秒缓冲（384 KB）
+constexpr size_t kPreloadBytes = kBytesPerSecond / 5;                    // 启动前预填 200 ms
+constexpr int kChunkFrames = 8192;                                       // 每次解码 8192 帧（≈170 ms）
 
 const char *StateName(int state) {
     switch (state) {
@@ -163,9 +166,13 @@ int32_t AudioPlayer::OnWriteDataCb(OH_AudioRenderer * /*renderer*/, void *userDa
 
 int AudioPlayer::FillAudio(uint8_t *buf, int32_t size) {
     callbackCount_.fetch_add(1);
+    if (size > maxCallbackBytes_.load()) maxCallbackBytes_.store(size);
 
     const size_t got = RingRead(buf, (size_t)size);
-    if (got > 0) gotFirstData_.store(true);
+    if (got > 0) {
+        gotFirstData_.store(true);
+        realBytes_.fetch_add(got);
+    }
     if (got == (size_t)size) return size;
 
     // 解码到头且缓冲已空：一个字节都不写，让系统睡，避免用静音把播放进度推走
@@ -185,8 +192,9 @@ void AudioPlayer::DecodeLoop() {
     std::vector<uint8_t> chunk;
     int64_t written = 0;
     while (running_.load()) {
-        if (RingUsed() > ring_.size() * 3 / 4) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        // 尽量把 ring 填满（留 4KB 余量），而不是等掉到某条水位线以下才动
+        if (RingUsed() + 4096 >= ring_.size()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
         int ret = decoder_->ReadPcm(chunk, kChunkFrames, kOutRate, kOutChannels);
@@ -213,46 +221,88 @@ void AudioPlayer::DecodeLoop() {
                 (long long)written, decoderEof_.load() ? 1 : 0);
 }
 
-// 用流式路径把整个文件解一遍，算 FNV-1a 64，用来和桌面参考值对拍。
-// 只有第一次 Open 做，避免每次重播都多解一遍。
+// 用流式路径把整个文件解两遍：
+//   A) 按源采样率/声道解 —— 校验“有没有把样本数搞多/搞少”（拉伸问题会在这里暴露）
+//   B) 按 48k/2ch 解 —— 与桌面 ffmpeg 的参考哈希对拍
+// 只有第一次 Open 做，避免每次重播都多解两遍。
 int AudioPlayer::SelfCheck() {
     if (!pcmHash_.empty()) return 0;
 
-    AudioDecoder probe;
     AudioInfo info;
-    if (probe.Open(path_, &info) < 0) {
-        OH_LOG_WARN(LOG_APP, "[player] selfcheck: open failed %{public}s", probe.LastError().c_str());
-        return -1;
-    }
-    std::vector<uint8_t> chunk;
-    unsigned long long h = 1469598103934665603ULL;
-    int64_t total = 0;
-    int peak = 0;
-    for (;;) {
-        int ret = probe.ReadPcm(chunk, 4096, kOutRate, kOutChannels);
-        if (ret == AVERROR_EOF) break;
-        if (ret < 0) {
-            OH_LOG_WARN(LOG_APP, "[player] selfcheck: read failed %{public}s", probe.LastError().c_str());
+    {
+        AudioDecoder probe;
+        if (probe.Open(path_, &info) < 0) {
+            OH_LOG_WARN(LOG_APP, "[player] selfcheck: open failed %{public}s", probe.LastError().c_str());
             return -1;
         }
-        for (size_t i = 0; i < chunk.size(); ++i) {
-            h ^= chunk[i];
-            h *= 1099511628211ULL;
+        srcRate_ = info.sampleRate;
+        srcChannels_ = info.channels;
+
+        // A) 源参数
+        unsigned long long h = 1469598103934665603ULL;
+        int64_t total = 0;
+        std::vector<uint8_t> chunk;
+        for (;;) {
+            int ret = probe.ReadPcm(chunk, 4096, srcRate_, srcChannels_);
+            if (ret == AVERROR_EOF) break;
+            if (ret < 0) {
+                OH_LOG_WARN(LOG_APP, "[player] selfcheck(src): %{public}s", probe.LastError().c_str());
+                return -1;
+            }
+            for (size_t i = 0; i < chunk.size(); ++i) {
+                h ^= chunk[i];
+                h *= 1099511628211ULL;
+            }
+            total += (int64_t)chunk.size();
         }
-        for (size_t i = 0; i + 1 < chunk.size(); i += 2) {
-            const int v = (int16_t)(chunk[i] | (chunk[i + 1] << 8));
-            const int a = v < 0 ? -v : v;
-            if (a > peak) peak = a;
-        }
-        total += (int64_t)chunk.size();
+        char hex[24] = {0};
+        snprintf(hex, sizeof(hex), "%016llx", h);
+        pcmSrcHash_ = hex;
+        pcmSrcBytes_ = total;
+        const int64_t expect = durationMs_ > 0
+                                   ? durationMs_ * (int64_t)srcRate_ * srcChannels_ * 2 / 1000
+                                   : 0;
+        OH_LOG_INFO(LOG_APP,
+                    "[player] selfcheck src=%{public}d/%{public}d bytes=%{public}lld expect~%{public}lld hash=%{public}s",
+                    srcRate_, srcChannels_, (long long)total, (long long)expect, hex);
     }
-    char hex[24] = {0};
-    snprintf(hex, sizeof(hex), "%016llx", h);
-    pcmHash_ = hex;
-    pcmBytes_ = total;
-    pcmPeak_ = peak;
-    OH_LOG_INFO(LOG_APP, "[player] selfcheck pcm=%{public}lld bytes peak=%{public}d hash=%{public}s (48k/2ch/S16)",
-                (long long)total, peak, hex);
+
+    {
+        // B) 48k/2ch
+        AudioDecoder probe;
+        if (probe.Open(path_, &info) < 0) return -1;
+        std::vector<uint8_t> chunk;
+        unsigned long long h = 1469598103934665603ULL;
+        int64_t total = 0;
+        int peak = 0;
+        for (;;) {
+            int ret = probe.ReadPcm(chunk, 8192, kOutRate, kOutChannels);
+            if (ret == AVERROR_EOF) break;
+            if (ret < 0) {
+                OH_LOG_WARN(LOG_APP, "[player] selfcheck(out): %{public}s", probe.LastError().c_str());
+                return -1;
+            }
+            for (size_t i = 0; i < chunk.size(); ++i) {
+                h ^= chunk[i];
+                h *= 1099511628211ULL;
+            }
+            for (size_t i = 0; i + 1 < chunk.size(); i += 2) {
+                const int v = (int16_t)(chunk[i] | (chunk[i + 1] << 8));
+                const int a = v < 0 ? -v : v;
+                if (a > peak) peak = a;
+            }
+            total += (int64_t)chunk.size();
+        }
+        char hex[24] = {0};
+        snprintf(hex, sizeof(hex), "%016llx", h);
+        pcmHash_ = hex;
+        pcmBytes_ = total;
+        pcmPeak_ = peak;
+        const int64_t expect = durationMs_ > 0 ? durationMs_ * (int64_t)kBytesPerSecond / 1000 : 0;
+        OH_LOG_INFO(LOG_APP,
+                    "[player] selfcheck out=48000/2 bytes=%{public}lld expect~%{public}lld peak=%{public}d hash=%{public}s",
+                    (long long)total, (long long)expect, peak, hex);
+    }
     return 0;
 }
 
@@ -307,14 +357,28 @@ int AudioPlayer::Play() {
     gotFirstData_.store(false);
     gaps_.store(0);
     callbackCount_.store(0);
+    realBytes_.store(0);
+    maxCallbackBytes_.store(0);
+
+    // 先起解码线程，让 ring 预填 200ms 再开渲染器 —— 否则启动阶段必然欠载
+    running_.store(true);
+    thread_ = std::thread(&AudioPlayer::DecodeLoop, this);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
+    while (std::chrono::steady_clock::now() < deadline && running_.load() &&
+           !decoderEof_.load() && RingUsed() < kPreloadBytes) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    OH_LOG_INFO(LOG_APP, "[player] preload ring=%{public}d bytes, eof=%{public}d",
+                (int)RingUsed(), decoderEof_.load() ? 1 : 0);
 
     if (OH_AudioRenderer_Start(renderer_) != AUDIOSTREAM_SUCCESS) {
+        running_.store(false);
+        if (thread_.joinable()) thread_.join();
         SetError("OH_AudioRenderer_Start failed");
         return -1;
     }
     state_.store(1);
-    running_.store(true);
-    thread_ = std::thread(&AudioPlayer::DecodeLoop, this);
     return 0;
 }
 
@@ -340,6 +404,8 @@ int AudioPlayer::Stop() {
     gotFirstData_.store(false);
     gaps_.store(0);
     callbackCount_.store(0);
+    realBytes_.store(0);
+    maxCallbackBytes_.store(0);
     state_.store(3);
     return 0;
 }
@@ -358,21 +424,31 @@ void AudioPlayer::Release() {
     gotFirstData_.store(false);
     gaps_.store(0);
     callbackCount_.store(0);
+    realBytes_.store(0);
+    maxCallbackBytes_.store(0);
     state_.store(0);
     durationMs_ = 0;
     codec_.clear();
     pcmHash_.clear();
+    pcmSrcHash_.clear();
     pcmBytes_ = 0;
+    pcmSrcBytes_ = 0;
+    pcmPeak_ = 0;
+    srcRate_ = 0;
+    srcChannels_ = 0;
     path_.clear();
     rendererRate_ = rendererChannels_ = rendererFrameSize_ = 0;
 }
 
 std::string AudioPlayer::StatusJson() const {
-    // 位置用官方口径：渲染器已写帧数，而不是我们数回调
+    // 位置用官方口径：渲染器已写帧数，而不是回调次数/字节数
     int64_t framesWritten = 0;
     if (renderer_ != nullptr) OH_AudioRenderer_GetFramesWritten(renderer_, &framesWritten);
     int64_t positionMs = rendererRate_ > 0 ? framesWritten * 1000 / rendererRate_ : 0;
     if (durationMs_ > 0 && positionMs > durationMs_) positionMs = durationMs_;  // 别超过总长
+
+    // 真实从 ring 取走的音频字节 → 音乐实际推进到哪里（不含补的静音）
+    const int64_t audioMs = (int64_t)(realBytes_.load() * 1000 / kBytesPerSecond);
 
     uint32_t underflow = 0;
     if (renderer_ != nullptr) OH_AudioRenderer_GetUnderflowCount(renderer_, &underflow);
@@ -382,17 +458,22 @@ std::string AudioPlayer::StatusJson() const {
     std::ostringstream os;
     os << "{\"state\":\"" << StateName(state_.load()) << "\""
        << ",\"positionMs\":" << positionMs
+       << ",\"audioMs\":" << audioMs
        << ",\"durationMs\":" << durationMs_
        << ",\"framesWritten\":" << framesWritten
        << ",\"underflow\":" << underflow
        << ",\"gaps\":" << gaps_.load()
        << ",\"callbacks\":" << callbackCount_.load()
+       << ",\"maxCallbackBytes\":" << maxCallbackBytes_.load()
        << ",\"rendererRate\":" << rendererRate_
        << ",\"rendererChannels\":" << rendererChannels_
        << ",\"rendererFrameSize\":" << rendererFrameSize_
+       << ",\"srcRate\":" << srcRate_
+       << ",\"srcChannels\":" << srcChannels_
        << ",\"pcmHash\":\"" << pcmHash_ << "\""
        << ",\"pcmBytes\":" << pcmBytes_
        << ",\"pcmPeak\":" << pcmPeak_
+       << ",\"pcmSrcBytes\":" << pcmSrcBytes_
        << ",\"finished\":" << (finished ? "true" : "false")
        << ",\"error\":\"" << LastError() << "\"}";
     return os.str();

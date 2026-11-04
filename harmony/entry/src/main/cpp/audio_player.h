@@ -55,6 +55,8 @@ private:
     std::atomic<int> state_{0};              // 0 idle / 1 playing / 2 paused / 3 stopped
     std::atomic<uint64_t> gaps_{0};          // 我们主动补静音的缺口次数
     std::atomic<uint64_t> callbackCount_{0}; // 回调次数（诊断用）
+    std::atomic<uint64_t> realBytes_{0};     // 真正从 ring 取走的数据字节（音乐进度）
+    std::atomic<int> maxCallbackBytes_{0};   // 回调要求过的最大块（诊断回调粒度）
 
     mutable std::mutex ringMutex_;
     std::vector<uint8_t> ring_;
@@ -73,6 +75,10 @@ private:
     std::string pcmHash_;
     int64_t pcmBytes_ = 0;
     int pcmPeak_ = 0;
+    std::string pcmSrcHash_;   // 按源采样率/声道解出的哈希（与 M1 整文件路径对齐用）
+    int64_t pcmSrcBytes_ = 0;
+    int srcRate_ = 0;
+    int srcChannels_ = 0;
 
     std::string path_;
     std::string codec_;
