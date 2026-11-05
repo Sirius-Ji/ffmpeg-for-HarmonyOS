@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  source-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout（需要 tags 做版本一致性检查）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: 源码 / 文档 / 组件白名单一致性
+        run: python3 build/check-release.py --source-only
+
+      - name: 脚本语法检查
+        run: python3 -m py_compile build/check-release.py build/make-release.py

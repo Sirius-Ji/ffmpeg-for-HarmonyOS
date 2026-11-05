@@ -2,6 +2,45 @@
 
 所有值得注意的变更都记在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## v0.1.5（2026-11-05）
+
+### 可复现构建验证（空版本）
+
+本次**未修改任何 C++ / 构建脚本**，只改文档与校验脚本；对 v0.1.4 源码原样重编双 ABI，
+5 个 `.so` 的 sha256 与 v0.1.4 **完全一致（10/10）**：
+
+**arm64-v8a**
+
+```
+2A3B6984793783BF979704E7B07BBB728145AF9B406901270179BA60F9DF530C  libavcodec.so.63
+EDB964283A84D81F9591B71743EA2CC27F2DFD609F4027FC2838689A6AA158F4  libavformat.so.63
+CB97BA8C34B3D5ADD6316479541AD2A30F6E3E8D5B2F6B0943D2F7EC557643E7  libavutil.so.61
+2090EC7257951D8B3D2F0A16D1A520FA908A5511309071BAA379EE416D3878D5  libswresample.so.7
+966E6195E13763A4411FD2F465506756DC945CE473D05DB6559D69FC0920A1DB  libmp3lame.so.0
+```
+
+**x86_64**
+
+```
+B5AEB3A66522885FDE4993AA328123C7825E7100F7EFC402DBFC6057D272C339  libavcodec.so.63
+C6FB159A06632416DD501976A5A6E1BCC48E6AAC78AF8B0D514A0A1C1D114596  libavformat.so.63
+F04EC698CD83FD818D92871F3120D3FA7206940B78C0C353B27C904EFBB1DA9D  libavutil.so.61
+7C7F4795387FFDABCD379FB473471DF85D8AFA736E675FB234E3B989B63F59F4  libswresample.so.7
+BC11A401217A1B4760A728748C710ECDD3BD2244558AF0A42091C4B0DD798876  libmp3lame.so.0
+```
+
+### CI / 校验强化
+
+- `check-release.py` 删除 eac3/config.cmake 固定文案断言，改为解析 `BUILD-INFO.txt` 的
+  `release_notes` 字段，必须包含当前版本 Tag。
+- 新增 **CMake 消费测试**：解包后用 3 行 `CMakeLists.txt` 跑 `find_package(ffmpeg_ohos REQUIRED)`，失败即中止发布。
+- 新增 `--source-only` 模式，供 CI 做源码 / 文档 / 组件白名单一致性检查。
+- `.github/workflows/ci.yml`：push / PR 到 `main` 时自动运行。
+
+### 文档
+
+- README 增加 **ABI 稳定性承诺**：锁定 SONAME `.so.63` / `.so.61` / `.so.7`，n10 升级视为破坏性更新。
+
 ## v0.1.4（2026-11-05）
 
 ### 变更

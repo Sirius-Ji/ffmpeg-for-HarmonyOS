@@ -59,3 +59,7 @@ harmony/entry/src/main/resources/rawfile/*.pcm
 *.log
 Thumbs.db
 .DS_Store
+
+# Python »º´æ
+__pycache__/
+*.pyc
