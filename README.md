@@ -1,6 +1,6 @@
 # ffmpeg-for-HarmonyOS
 
-> **v0.1.4 Alpha · 早期测试版**
+> **v0.1.5 Alpha · 早期测试版**
 >
 > 解码 / 播放链路已真机验证（192 kHz/2ch FLAC 无卡顿、无爆音），**v0.1.1 起加入基础转码能力**
 > （音频编码 `aac/alac/flac/mp3(libmp3lame)/opus/pcm_s16le/pcm_s24le`，
@@ -8,7 +8,20 @@
 > **v0.1.3 起 M3.0/M3.1 硬解已合入**，并随 Release 提供 CMake Config。
 > **API 仍可能变更**，欢迎试用、集成、提 Issue 和 PR。
 
-## 🚀 v0.1.4 更新亮点
+> **ABI 稳定性承诺：** 本库锁定 SONAME 为 `.so.63` / `.so.61` / `.so.7`。
+> 若未来 FFmpeg 升级至 n10，SONAME 发生变更将视为**破坏性更新**，需升级 **major 版本**。
+
+## 🚀 v0.1.5 更新亮点
+
+- **空版本可复现证明**：不改任何 C++ / 构建脚本，双 ABI 重新编译，**10 个 .so 哈希与 v0.1.4 完全一致**
+  （明细见 [CHANGELOG.md](CHANGELOG.md)）。
+- **CI 断言去化石**：`check-release.py` 不再检查固定的 eac3/config 文案，
+  改为解析 `BUILD-INFO.txt` 的 `release_notes` 字段，必须包含当前版本 Tag。
+- **CMake 消费测试**：打包后自动解包、用一个 3 行 `CMakeLists.txt` 跑 `find_package(ffmpeg_ohos REQUIRED)`，
+  失败即中止发布（连字符/下划线写错会被当场拦下）。
+- **真实 CI 上线**：`.github/workflows/ci.yml` 在 push 到 `main` 时跑源码一致性检查。
+
+## 🚀 v0.1.4 更新亮点（历史）
 
 - **可复现构建**：交叉编译加入 `-ffile-prefix-map` 与 `SOURCE_DATE_EPOCH`，
   未改动的库（avformat/avutil/swresample）重新构建后 **sha256 保持不变**。

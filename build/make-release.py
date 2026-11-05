@@ -33,9 +33,25 @@ COMPONENTS = {
     "decoders": "aac ac3 eac3 alac ape dca flac mp3 mp3float opus pcm_s16le pcm_s24le pcm_s32le wmav2 h264_oh hevc_oh",
     "encoders": "aac alac flac libmp3lame opus pcm_s16le pcm_s24le",
     "muxers": "mp4 mov ipod mp3 flac wav matroska adts ogg opus",
+    "demuxers": "mov matroska ogg flac ape dsf wav mp3 aac tta wv caf asf",
+    "bsf": "aac_adtstoasc",
     "parsers": "aac ac3 dca flac mpegaudio opus",
     "notes": "MP3 编码走 libmp3lame（LGPL-2.1）；Opus 编码为 FFmpeg 原生实验性实现，需 strict_std_compliance=EXPERIMENTAL",
 }
+
+
+def release_tag():
+    env = os.environ.get("RELEASE_TAG")
+    if env:
+        return env.strip()
+    try:
+        return subprocess.check_output(["git", "describe", "--tags", "--abbrev=0"],
+                                       cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:  # noqa: BLE001
+        return "dev"
+
+
+TAG = release_tag()
 
 
 def sha256(path):
@@ -57,13 +73,16 @@ def build_info(abi, lib_files):
     ]
     for key, val in COMPONENTS.items():
         lines.append(f"  {key:9s}: {val}")
-    lines += ["", "files:"]
+    lines += [
+        "",
+        f"release_tag : {TAG}",
+        f"release_notes: {TAG} · 可复现构建 + Release sha256 强校验 + CMake 消费测试。",
+        "",
+        "files:",
+    ]
     for name, path in sorted(lib_files.items()):
         lines.append(f"  lib/{name}  sha256={sha256(path)}  size={os.path.getsize(path)}")
     lines += [
-        "",
-        "release notes:",
-        "  * 本次 prebuilt 包含新增的 eac3 解码器，并提供了 config.cmake，修正了文档口径。",
         "",
         "notes:",
         "  * 链接时请使用带大版本号的文件名（SONAME 一致），不要改名成 libxxx.so",
