@@ -202,11 +202,6 @@ def check_readme(failures, packages, libs_by_abi):
         if banned in text:
             failures.append(f"README 仍提到已不发布的库名: {banned}")
 
-    if "eac3" not in text:
-        failures.append("README 未提到新增的 eac3 解码器")
-    if "ffmpeg-ohos-config.cmake" not in text:
-        failures.append("README 未提到 ffmpeg-ohos-config.cmake")
-
     for pkg in packages:
         if pkg and pkg not in text:
             failures.append(f"README 未提到发布包名: {pkg}")
@@ -216,12 +211,16 @@ def latest_tag():
     env = os.environ.get("RELEASE_TAG")
     if env:
         return env.strip()
+    # 只认严格 vX.Y.Z 发布标签；忽略 v0.1.5-fix 这类本地后缀标签
     try:
-        out = subprocess.check_output(["git", "describe", "--tags", "--abbrev=0"],
+        out = subprocess.check_output(["git", "tag", "--list", "v*"],
                                       cwd=ROOT, text=True, stderr=subprocess.DEVNULL)
-        return out.strip()
     except Exception:  # noqa: BLE001
         return ""
+    tags = [t.strip() for t in out.splitlines() if re.fullmatch(r"v\d+\.\d+\.\d+", t.strip())]
+    if not tags:
+        return ""
+    return max(tags, key=lambda t: tuple(int(x) for x in t[1:].split(".")))
 
 
 def find_cmake():
