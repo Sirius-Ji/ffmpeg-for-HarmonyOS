@@ -11,6 +11,7 @@
   2. build/<abi>/config_components.h 里的 #define CONFIG_xxx_ENCODER 1
 两处都过才算数——只看其中一处都可能被依赖裁剪骗过。
 """
+import hashlib
 import os
 import re
 import sys
@@ -142,6 +143,24 @@ def check_zip(abi, failures):
             failures.append(f"[{abi}] BUILD-INFO 未列出 eac3")
         if "config.cmake" not in info:
             failures.append(f"[{abi}] BUILD-INFO 未提到 config.cmake")
+
+        # 严格比对：包内每个 .so 的 sha256 必须与 BUILD-INFO.txt 记录一致
+        recorded = {}
+        for line in info.splitlines():
+            m = re.match(r"\s+lib/(\S+)\s+sha256=([0-9a-f]{64})\s+size=(\d+)", line)
+            if m:
+                recorded["lib/" + m.group(1)] = m.group(2)
+        so_names = [n for n in names if re.match(r"^lib/lib\w+\.so\.\d+$", n)]
+        if len(so_names) != len(MUST_SHIP):
+            failures.append(f"[{abi}] 包内 .so 数量不对: {len(so_names)}，应发布 {len(MUST_SHIP)} 个")
+        for fn in sorted(so_names):
+            if fn not in recorded:
+                failures.append(f"[{abi}] BUILD-INFO 未记录 {fn} 的 sha256")
+                continue
+            digest = hashlib.sha256(z.read(fn)).hexdigest()
+            if digest != recorded[fn]:
+                failures.append(
+                    f"[{abi}] {fn} sha256 与 BUILD-INFO 不一致: zip={digest[:16]}… info={recorded[fn][:16]}…")
     except KeyError:
         failures.append(f"[{abi}] 读不到 BUILD-INFO.txt")
 

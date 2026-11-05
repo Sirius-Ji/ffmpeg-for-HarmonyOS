@@ -2,6 +2,20 @@
 
 所有值得注意的变更都记在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## v0.1.4（2026-11-05）
+
+### 变更
+
+- **可复现构建**：`build/build-ffmpeg.sh` 加入 `-ffile-prefix-map` 与 `SOURCE_DATE_EPOCH`，
+  未改动的库重新构建后 sha256 保持稳定。
+- `transcodeTo` / `transcodeByPath` 新增可选 `bitrateKbps`（32–512），
+  默认 AAC 128 / MP3 192 / Opus 96；FLAC/WAV 忽略该参数。
+- README：§2 转码封装措辞修正为 `ipod（m4a）`；CMake 集成明确包名是 `ffmpeg_ohos`（下划线）。
+
+### 修复
+
+- `check-release.py` 新增严格校验：包内 5 个 `.so` 的 sha256 必须与 `BUILD-INFO.txt` 记录一致。
+
 ## v0.1.3（2026-11-05）
 
 ### 新增

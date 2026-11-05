@@ -4,6 +4,18 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# 可复现构建：固定源码时间戳，避免 __DATE__/版本串随构建时间变化。
+# MSYS2 里通常没有 git，回退到 Windows 自带 Git。
+GIT_BIN=$(command -v git 2>/dev/null || true)
+if [ -z "$GIT_BIN" ] && [ -x "/c/Program Files/Git/cmd/git.exe" ]; then
+  GIT_BIN="/c/Program Files/Git/cmd/git.exe"
+fi
+if [ -n "$GIT_BIN" ]; then
+  SOURCE_DATE_EPOCH=$("$GIT_BIN" -C "$ROOT" log -1 --format=%ct 2>/dev/null || echo 0)
+else
+  SOURCE_DATE_EPOCH=0
+fi
+export SOURCE_DATE_EPOCH
 # NDK 位置：优先 NDK 变量，其次 .tools/ndk 软链，最后按 DevEco 默认安装位置（可用 DEVECO_HOME 覆盖）
 DEVECO_HOME=${DEVECO_HOME:-/d/Program Files/DevEco Studio}
 NDK=${NDK:-"$ROOT/.tools/ndk"}
@@ -78,7 +90,7 @@ build_one() {
     --strip="$tdir/strip" \
     --host-cc="${HOSTCC:-$tdir/cc}" \
     $SYSFLAG \
-    --extra-cflags="-D__MUSL__ -I$OUT/$abi/include" \
+    --extra-cflags="-D__MUSL__ -I$OUT/$abi/include -ffile-prefix-map=$ROOT=/build" \
     --extra-ldflags="-Wl,-z,max-page-size=16384 -L$OUT/$abi/lib" \
     --prefix="$OUT/$abi" \
     --enable-shared --disable-static \

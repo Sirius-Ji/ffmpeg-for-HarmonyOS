@@ -1,6 +1,6 @@
 # ffmpeg-for-HarmonyOS
 
-> **v0.1.3 Alpha · 早期测试版**
+> **v0.1.4 Alpha · 早期测试版**
 >
 > 解码 / 播放链路已真机验证（192 kHz/2ch FLAC 无卡顿、无爆音），**v0.1.1 起加入基础转码能力**
 > （音频编码 `aac/alac/flac/mp3(libmp3lame)/opus/pcm_s16le/pcm_s24le`，
@@ -8,7 +8,15 @@
 > **v0.1.3 起 M3.0/M3.1 硬解已合入**，并随 Release 提供 CMake Config。
 > **API 仍可能变更**，欢迎试用、集成、提 Issue 和 PR。
 
-## 🚀 v0.1.3 更新亮点
+## 🚀 v0.1.4 更新亮点
+
+- **可复现构建**：交叉编译加入 `-ffile-prefix-map` 与 `SOURCE_DATE_EPOCH`，
+  未改动的库（avformat/avutil/swresample）重新构建后 **sha256 保持不变**。
+- **CI 强化**：`check-release.py` 会把包内 5 个 `.so` 的 sha256 与 `BUILD-INFO.txt` 逐一对拍，不一致直接失败。
+- **转码码率可调**：`transcodeTo` / `transcodeByPath` 新增可选 `bitrateKbps`（32–512），默认 AAC 128 / MP3 192 / Opus 96。
+- **文档修正**：转码封装措辞统一为 `ipod（m4a）`；CMake 集成强调包名是 `ffmpeg_ohos`（下划线）。
+
+## 🚀 v0.1.3 更新亮点（历史）
 
 - **新增 E-AC3 解码**：`eac3` 原生解码器编入白名单，解决部分全景声 M4A（E-AC3 音轨）无法解码的问题。
 - **CMake Config 随包发布**：Release 包内含 `ffmpeg-ohos-config.cmake`，`find_package(ffmpeg_ohos REQUIRED)`
@@ -73,6 +81,9 @@
 以及 `lib/cmake/ffmpeg_ohos/ffmpeg-ohos-config.cmake`。
 
 **方式 A（v0.1.3+ 推荐）**：直接用随包发布的 CMake Config：
+
+> ⚠️ **包名是 `ffmpeg_ohos`（下划线），不是 `ffmpeg-ohos`（连字符）。**
+> 必须写 `find_package(ffmpeg_ohos REQUIRED)` 才能生效；连字符写法会直接报找不到包。
 
 ```cmake
 list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg-ohos/${OHOS_ARCH})
@@ -145,7 +156,7 @@ C++ 侧的参考实现（解封装 → 软解 → 重采样 → OHAudio 播放�
 [`audio_player.cpp`](harmony/entry/src/main/cpp/audio_player.cpp)，可以直接抄。
 
 转码侧在 [`transcoder.cpp`](harmony/entry/src/main/cpp/transcoder.cpp)：解封装 → 软解 →
-重采样到 48 kHz/2ch → **AAC 编码** → **mp4（m4a）封装**，全程走 fd，不落临时文件。
+重采样到 48 kHz/2ch → **AAC 编码** → **ipod（m4a）封装**，全程走 fd，不落临时文件。
 
 > **批量转码默认走软解**：NAPI 转码接口不会创建 `OH_AudioCodec` 实例。
 > 系统硬解实例有上限，且转码瓶颈在编码，硬解只会增加不稳定性；需要硬解请在播放链路使用。
@@ -153,10 +164,13 @@ C++ 侧的参考实现（解封装 → 软解 → 重采样 → OHAudio 播放�
 ```ts
 const inFile = fs.openSync(src, fs.OpenMode.READ_ONLY);
 const outFile = fs.openSync(dst, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-const res = native.transcodeToAac(inFile.fd, outFile.fd);  // { ok, data }
+const res = native.transcodeTo(inFile.fd, outFile.fd, 'aac', 192);  // 可选 bitrateKbps；省略用默认
+// 等价旧接口：native.transcodeToAac(inFile.fd, outFile.fd) → { ok, data }
 fs.closeSync(inFile);
 fs.closeSync(outFile);
 ```
+
+`bitrateKbps` 可选，范围 32–512：AAC 默认 128、MP3 192、Opus 96；FLAC/WAV 忽略该参数。
 
 demo 里有五个转码按钮（**AAC / MP3 / Opus / FLAC / WAV**）和一个**路径 API** 按钮，
 会把内置 `play.m4a` 转成 `filesDir/transcoded.{m4a,mp3,opus,flac,wav}` 并直接播放结果；

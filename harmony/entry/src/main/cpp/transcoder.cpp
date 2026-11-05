@@ -143,7 +143,8 @@ struct Ctx {
 
 }  // namespace
 
-int TranscodeAudio(int srcFd, int dstFd, const std::string &format, std::string *summary, std::string *err) {
+int TranscodeAudio(int srcFd, int dstFd, const std::string &format, int bitrateKbps,
+                   std::string *summary, std::string *err) {
     auto fail = [&](const std::string &what) {
         if (err) *err = what;
         OH_LOG_ERROR(LOG_APP, "[transcode] %{public}s", what.c_str());
@@ -152,6 +153,12 @@ int TranscodeAudio(int srcFd, int dstFd, const std::string &format, std::string 
 
     Profile prof{};
     if (!PickProfile(format, &prof)) return fail("unsupported format: " + format);
+    // 可选码率覆盖：只对压缩编码生效，flac/wav 忽略；范围 32–512 kbps
+    if (bitrateKbps > 0 && prof.bitrate > 0) {
+        const int kbps = std::max(32, std::min(512, bitrateKbps));
+        prof.bitrate = kbps * 1000;
+        OH_LOG_INFO(LOG_APP, "[transcode] bitrate override %{public}d kbps", kbps);
+    }
     OH_LOG_INFO(LOG_APP, "[transcode] format=%{public}s muxer=%{public}s bitrate=%{public}d",
                 prof.name, prof.muxer, prof.bitrate);
     // 批量转码默认软解：不创建 OH_AudioCodec 实例（硬解实例有上限，瓶颈在编码器）
@@ -455,5 +462,5 @@ int TranscodeAudio(int srcFd, int dstFd, const std::string &format, std::string 
 
 // 兼容旧调用：默认转 AAC
 int TranscodeToAac(int srcFd, int dstFd, std::string *summary, std::string *err) {
-    return TranscodeAudio(srcFd, dstFd, "aac", summary, err);
+    return TranscodeAudio(srcFd, dstFd, "aac", 0, summary, err);
 }

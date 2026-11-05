@@ -20,10 +20,11 @@ declare const native: {
   // 转码示例：srcFd 解出的第一条音轨 → AAC(ipod/m4a) 写入 dstFd
   transcodeToAac: (srcFd: number, dstFd: number) => NapiResult;
   // 通用转码：format 支持 "aac" / "mp3" / "opus" / "flac" / "wav"
+  // bitrateKbps 可选：压缩编码 32–512，省略则用默认（AAC 128 / MP3 192 / Opus 96）；flac/wav 忽略
   // 批量转码默认软解：底层不会创建 OH_AudioCodec 实例（硬解实例有上限，转码瓶颈在编码器）
-  transcodeTo: (srcFd: number, dstFd: number, format: string) => NapiResult;
+  transcodeTo: (srcFd: number, dstFd: number, format: string, bitrateKbps?: number) => NapiResult;
   // 走路径的转码：native 侧直接 open 两个文件，省掉 ArkTS 取 fd
-  transcodeByPath: (srcPath: string, dstPath: string, format: string) => NapiResult;
+  transcodeByPath: (srcPath: string, dstPath: string, format: string, bitrateKbps?: number) => NapiResult;
   // M3.0 探针：查系统硬解对 AAC/MP3/FLAC 的能力
   hardwareProbe: () => NapiResult;
   // M3.1 硬解开关（A/B 对比用），影响下一次 Open

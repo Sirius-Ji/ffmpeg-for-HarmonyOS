@@ -240,43 +240,58 @@ bool IsSupportedFormat(const std::string &format) {
 }
 
 napi_value TranscodeToFn(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    size_t argc = 4;
+    napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc < 3) return ResultError(env, "transcodeTo(srcFd, dstFd, format): 参数不足");
+    if (argc < 3) return ResultError(env, "transcodeTo(srcFd, dstFd, format[, bitrateKbps]): 参数不足");
 
     int32_t srcFd = -1;
     int32_t dstFd = -1;
     if (napi_get_value_int32(env, argv[0], &srcFd) != napi_ok || srcFd < 0 ||
         napi_get_value_int32(env, argv[1], &dstFd) != napi_ok || dstFd < 0) {
-        return ResultError(env, "transcodeTo(srcFd, dstFd, format): fd 非法");
+        return ResultError(env, "transcodeTo(srcFd, dstFd, format[, bitrateKbps]): fd 非法");
     }
     const std::string format = GetString(env, argv[2]);
     if (!IsSupportedFormat(format)) {
         return ResultError(env, "transcodeTo: format 只支持 aac/mp3/opus/flac/wav，收到 " + format);
     }
+    int32_t bitrateKbps = 0;  // 0 = 用格式默认码率
+    if (argc >= 4 && argv[3] != nullptr) {
+        napi_valuetype type = napi_undefined;
+        if (napi_typeof(env, argv[3], &type) == napi_ok && type == napi_number) {
+            napi_get_value_int32(env, argv[3], &bitrateKbps);
+        }
+    }
 
     std::string summary;
     std::string err;
-    OH_LOG_INFO(LOG_APP, "[transcode] start srcFd=%{public}d dstFd=%{public}d format=%{public}s",
-                srcFd, dstFd, format.c_str());
-    const int rc = TranscodeAudio(srcFd, dstFd, format, &summary, &err);
+    OH_LOG_INFO(LOG_APP,
+                "[transcode] start srcFd=%{public}d dstFd=%{public}d format=%{public}s bitrateKbps=%{public}d",
+                srcFd, dstFd, format.c_str(), bitrateKbps);
+    const int rc = TranscodeAudio(srcFd, dstFd, format, bitrateKbps, &summary, &err);
     if (rc != 0) return ResultError(env, err.empty() ? "transcode failed" : err);
     return MakeResult(env, true, summary);
 }
 
 // 走路径的转码：native 侧 open() 两个文件，省掉 ArkTS 层取 fd
 napi_value TranscodeByPathFn(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    size_t argc = 4;
+    napi_value argv[4] = {nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc < 3) return ResultError(env, "transcodeByPath(srcPath, dstPath, format): 参数不足");
+    if (argc < 3) return ResultError(env, "transcodeByPath(srcPath, dstPath, format[, bitrateKbps]): 参数不足");
 
     const std::string srcPath = GetString(env, argv[0]);
     const std::string dstPath = GetString(env, argv[1]);
     const std::string format = GetString(env, argv[2]);
     if (!IsSupportedFormat(format)) {
         return ResultError(env, "transcodeByPath: format 只支持 aac/mp3/opus/flac/wav，收到 " + format);
+    }
+    int32_t bitrateKbps = 0;
+    if (argc >= 4 && argv[3] != nullptr) {
+        napi_valuetype type = napi_undefined;
+        if (napi_typeof(env, argv[3], &type) == napi_ok && type == napi_number) {
+            napi_get_value_int32(env, argv[3], &bitrateKbps);
+        }
     }
 
     const int inFd = ::open(srcPath.c_str(), O_RDONLY);
@@ -291,7 +306,7 @@ napi_value TranscodeByPathFn(napi_env env, napi_callback_info info) {
     std::string err;
     OH_LOG_INFO(LOG_APP, "[transcode] byPath %{public}s -> %{public}s (%{public}s)",
                 srcPath.c_str(), dstPath.c_str(), format.c_str());
-    const int rc = TranscodeAudio(inFd, outFd, format, &summary, &err);
+    const int rc = TranscodeAudio(inFd, outFd, format, bitrateKbps, &summary, &err);
     ::close(inFd);
     ::close(outFd);
     if (rc != 0) return ResultError(env, err.empty() ? "transcode failed" : err);
