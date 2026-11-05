@@ -5,6 +5,9 @@
 #include <hilog/log.h>
 #include <napi/native_api.h>
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -12,6 +15,7 @@
 
 #include "audio_player.h"
 #include "decoder.h"
+#include "hardware_probe.h"
 #include "transcoder.h"
 
 #undef LOG_DOMAIN
@@ -229,7 +233,12 @@ napi_value TranscodeToAacFn(napi_env env, napi_callback_info info) {
     return MakeResult(env, true, summary);
 }
 
-// 通用转码：src fd + dst fd + 输出格式（aac / mp3 / opus）
+// 通用转码：src fd + dst fd + 输出格式（aac / mp3 / opus / flac / wav）
+bool IsSupportedFormat(const std::string &format) {
+    return format == "aac" || format == "mp3" || format == "opus" ||
+           format == "flac" || format == "wav";
+}
+
 napi_value TranscodeToFn(napi_env env, napi_callback_info info) {
     size_t argc = 3;
     napi_value argv[3] = {nullptr, nullptr, nullptr};
@@ -243,8 +252,8 @@ napi_value TranscodeToFn(napi_env env, napi_callback_info info) {
         return ResultError(env, "transcodeTo(srcFd, dstFd, format): fd 非法");
     }
     const std::string format = GetString(env, argv[2]);
-    if (format != "aac" && format != "mp3" && format != "opus") {
-        return ResultError(env, "transcodeTo: format 只支持 aac/mp3/opus，收到 " + format);
+    if (!IsSupportedFormat(format)) {
+        return ResultError(env, "transcodeTo: format 只支持 aac/mp3/opus/flac/wav，收到 " + format);
     }
 
     std::string summary;
@@ -256,7 +265,61 @@ napi_value TranscodeToFn(napi_env env, napi_callback_info info) {
     return MakeResult(env, true, summary);
 }
 
-napi_value PlayerPlay(napi_env env, napi_callback_info /*info*/) {    AudioPlayer *player = EnsurePlayer();
+// 走路径的转码：native 侧 open() 两个文件，省掉 ArkTS 层取 fd
+napi_value TranscodeByPathFn(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 3) return ResultError(env, "transcodeByPath(srcPath, dstPath, format): 参数不足");
+
+    const std::string srcPath = GetString(env, argv[0]);
+    const std::string dstPath = GetString(env, argv[1]);
+    const std::string format = GetString(env, argv[2]);
+    if (!IsSupportedFormat(format)) {
+        return ResultError(env, "transcodeByPath: format 只支持 aac/mp3/opus/flac/wav，收到 " + format);
+    }
+
+    const int inFd = ::open(srcPath.c_str(), O_RDONLY);
+    if (inFd < 0) return ResultError(env, "transcodeByPath: 打不开源文件 " + srcPath);
+    const int outFd = ::open(dstPath.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (outFd < 0) {
+        ::close(inFd);
+        return ResultError(env, "transcodeByPath: 创建目标文件失败 " + dstPath);
+    }
+
+    std::string summary;
+    std::string err;
+    OH_LOG_INFO(LOG_APP, "[transcode] byPath %{public}s -> %{public}s (%{public}s)",
+                srcPath.c_str(), dstPath.c_str(), format.c_str());
+    const int rc = TranscodeAudio(inFd, outFd, format, &summary, &err);
+    ::close(inFd);
+    ::close(outFd);
+    if (rc != 0) return ResultError(env, err.empty() ? "transcode failed" : err);
+    return MakeResult(env, true, summary);
+}
+
+// M3.0 探针：系统 OH_AudioCodec 对 AAC/MP3/FLAC 的能力与可配置性
+napi_value HardwareProbeFn(napi_env env, napi_callback_info /*info*/) {
+    std::string json;
+    if (HardwareProbe(&json) != 0) return ResultError(env, "hardwareProbe failed");
+    OH_LOG_INFO(LOG_APP, "[probe] json=%{public}s", json.c_str());
+    return MakeResult(env, true, json);
+}
+
+// M3.1：硬解开关（A/B 对比用），影响下一次 Open
+napi_value DecoderSetHardwareFn(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    bool on = true;
+    if (argc >= 1) napi_get_value_bool(env, argv[0], &on);
+    SetHardwareDecodeEnabled(on);
+    OH_LOG_INFO(LOG_APP, "[decoder] hardware decode %{public}s", on ? "on" : "off");
+    return MakeResult(env, true, std::string("{\"hardware\":") + (on ? "true" : "false") + "}");
+}
+
+napi_value PlayerPlay(napi_env env, napi_callback_info /*info*/) {
+    AudioPlayer *player = EnsurePlayer();
     if (player->Play() != 0) return ResultError(env, player->LastError());
     OH_LOG_INFO(LOG_APP, "[player] play");
     return MakeResult(env, true, player->StatusJson());
@@ -304,6 +367,9 @@ napi_value Init(napi_env env, napi_value exports) {
         {"playerRelease", nullptr, PlayerRelease, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"transcodeToAac", nullptr, TranscodeToAacFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"transcodeTo", nullptr, TranscodeToFn, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"transcodeByPath", nullptr, TranscodeByPathFn, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"hardwareProbe", nullptr, HardwareProbeFn, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"decoderSetHardware", nullptr, DecoderSetHardwareFn, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
     OH_LOG_INFO(LOG_APP, "[init] libentry.so loaded, ffmpeg=%{public}s", "avformat/avcodec/avutil/swresample");

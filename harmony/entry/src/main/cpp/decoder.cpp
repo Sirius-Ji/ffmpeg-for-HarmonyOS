@@ -1,15 +1,26 @@
 #include "decoder.h"
 
 #include "fdio.h"
+#include "ohcodec_decoder.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <sstream>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
+
+#include <hilog/log.h>
+
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0xFF01
+#define LOG_TAG "FFM1"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -19,6 +30,34 @@ extern "C" {
 #include <libavutil/error.h>
 #include <libavutil/opt.h>
 #include <libswresample/swresample.h>
+#include <multimedia/player_framework/native_avcodec_base.h>
+}
+
+// M3.1 硬解总开关（默认开），NAPI 可切换用于 A/B 对比
+namespace {
+std::atomic<bool> g_hardwareDecode{true};
+std::atomic<bool> g_ohcodecFatal{false};
+}
+
+void SetHardwareDecodeEnabled(bool on) { g_hardwareDecode.store(on); }
+bool HardwareDecodeEnabled() { return g_hardwareDecode.load(); }
+void MarkOhCodecFatal() { g_ohcodecFatal.store(true); }
+bool OhCodecFatal() { return g_ohcodecFatal.load(); }
+
+const char *AudioDecoder::HwStageName() const {
+    switch (hwStage_.load()) {
+        case 1: return "OH_AudioCodec_QueryOutputBuffer";
+        case 2: return "av_read_frame";
+        case 3: return "OH_AudioCodec_SendEos/QueryInputBuffer";
+        case 4: return "OH_AudioCodec_PushInputBuffer";
+        case 5: return "fallback/close";
+        default: return "idle";
+    }
+}
+
+bool AudioDecoder::HwStuckInOhCodec() const {
+    const int stage = hwStage_.load();
+    return stage == 1 || stage == 3 || stage == 4 || stage == 5;
 }
 
 namespace {
@@ -80,6 +119,8 @@ AudioDecoder::~AudioDecoder() { Close(); }
 void AudioDecoder::SetError(const std::string &what) { err_ = what; }
 
 void AudioDecoder::Close() {
+    if (hw_) { hw_->Close(); hw_.reset(); }
+    if (swrHw_) { swr_free((SwrContext **)&swrHw_); swrHw_ = nullptr; }
     if (swrStream_) { swr_free((SwrContext **)&swrStream_); swrStream_ = nullptr; }
     if (swr_) { swr_free((SwrContext **)&swr_); swr_ = nullptr; }
     if (frame_) { av_frame_free((AVFrame **)&frame_); frame_ = nullptr; }
@@ -103,6 +144,18 @@ void AudioDecoder::Close() {
     streamIndex_ = -1;
     outChannels_ = 0;
     outSampleRate_ = 0;
+    route_ = "ffmpeg";
+    routeWhy_.clear();
+    hwEosSent_ = false;
+    hwEosIdle_ = 0;
+    hwGotEos_ = false;
+    hwDeadlineExt_ = 0;
+    hwExpectedSamples_ = 0;
+    hwSrcSamplesOut_ = 0;
+    hwLastPtsUs_ = 0;
+    hwRate_ = 0;
+    hwCh_ = 0;
+    adts_.clear();
 }
 
 int AudioDecoder::Open(const std::string &path, AudioInfo *info) {
@@ -203,6 +256,59 @@ int AudioDecoder::FinishOpen(AudioInfo *info) {
         SetError("alloc frame/packet failed");
         return AVERROR(ENOMEM);
     }
+
+    // ---- M3 路由：AAC / MP3 / FLAC 优先试系统硬解，失败回退 FFmpeg ----
+    route_ = "ffmpeg";
+    routeWhy_.clear();
+    const char *hwMime = nullptr;
+    if (HardwareDecodeEnabled() && !OhCodecFatal()) {
+        switch (codec->id) {
+            case AV_CODEC_ID_AAC: hwMime = OH_AVCODEC_MIMETYPE_AUDIO_AAC; break;
+            case AV_CODEC_ID_MP3: hwMime = OH_AVCODEC_MIMETYPE_AUDIO_MPEG; break;
+            case AV_CODEC_ID_FLAC: hwMime = OH_AVCODEC_MIMETYPE_AUDIO_FLAC; break;
+            default: break;
+        }
+        if (hwMime != nullptr) {
+            const AVCodecParameters *par = st->codecpar;
+            const int srcChannels = par->ch_layout.nb_channels;
+            std::string why;
+            if (OhCodecDecoder::CapabilityAllows(hwMime, par->sample_rate, srcChannels, &why)) {
+                auto hw = std::make_unique<OhCodecDecoder>();
+                if (hw->Open(hwMime, par->sample_rate, srcChannels, par->extradata,
+                             par->extradata_size, &why) == 0) {
+                    hw_ = std::move(hw);
+                    hwRate_ = par->sample_rate;
+                    hwCh_ = srcChannels;
+                    hwEosSent_ = false;
+                    hwGotEos_ = false;
+                    hwEosIdle_ = 0;
+                    hwEosTry_ = 0;
+                    hwDeadlineExt_ = 0;
+                    hwExpectedSamples_ = 0;
+                hwSrcSamplesOut_ = 0;
+                    if (fmt->duration > 0) {
+                        hwExpectedSamples_ =
+                            av_rescale(fmt->duration, par->sample_rate, AV_TIME_BASE);
+                    }
+                    hwLastPtsUs_ = 0;
+                    route_ = "ohcodec";
+                    routeWhy_.clear();
+                } else {
+                    routeWhy_ = why;
+                }
+            } else {
+                routeWhy_ = why;
+            }
+        }
+    }
+    if (OhCodecFatal()) {
+        routeWhy_ = "circuit breaker tripped: ohcodec stuck earlier";
+    }
+    OH_LOG_INFO(LOG_APP,
+                "[decoder] route=%{public}s mime=%{public}s codec=%{public}s src=%{public}d/%{public}d reason=%{public}s",
+                route_.c_str(), hwMime != nullptr ? hwMime : "-", codec->name,
+                st->codecpar->sample_rate, st->codecpar->ch_layout.nb_channels,
+                routeWhy_.c_str());
 
     if (info) {
         info->format = fmt->iformat && fmt->iformat->name ? fmt->iformat->name : "?";
@@ -379,6 +485,9 @@ int AudioDecoder::StreamFillPending(int outRate, int outChannels) {
     pending_.clear();
     pendingPos_ = 0;
 
+    // M3.1：AAC 硬解路径
+    if (hw_) return HwFillPending(outRate, outChannels);
+
     for (;;) {
         int ret = avcodec_receive_frame(dec, frame);
         if (ret == 0) {
@@ -476,6 +585,7 @@ int AudioDecoder::ReadPcm(std::vector<uint8_t> &out, int maxFrames, int outRate,
 
     const size_t want = (size_t)maxFrames * outChannels * 2;
     while (out.size() < want) {
+        if (stopRequested_.load()) return AVERROR_EXIT;
         int ret = StreamFillPending(outRate, outChannels);
         if (ret < 0) {
             // 已经有数据就先给出去，EOF 留到下次再报，避免丢尾巴
@@ -488,4 +598,330 @@ int AudioDecoder::ReadPcm(std::vector<uint8_t> &out, int maxFrames, int outRate,
         pendingPos_ += take;
     }
     return 0;
+}
+
+// ---------------- M3.1：AAC 硬解后端 ----------------
+
+void AudioDecoder::BuildElementary(void *pktPtr) {
+    AVPacket *pkt = (AVPacket *)pktPtr;
+    adts_.clear();
+    if (pkt == nullptr || pkt->size <= 0 || pkt->data == nullptr) return;
+
+    AVFormatContext *fmt = (AVFormatContext *)fmt_;
+    if (fmt == nullptr || streamIndex_ < 0) return;
+    const AVCodecParameters *par = fmt->streams[streamIndex_]->codecpar;
+
+    // MP3 / FLAC：demuxer 出来的就是裸码流，原样推给系统解码器
+    if (par->codec_id == AV_CODEC_ID_MP3 || par->codec_id == AV_CODEC_ID_FLAC) {
+        adts_.assign(pkt->data, pkt->data + pkt->size);
+        return;
+    }
+
+    // 已经是 ADTS（裸 aac / adts 容器）就不再包一层
+    if (pkt->size >= 2 && pkt->data[0] == 0xFF && (pkt->data[1] & 0xF6) == 0xF0) {
+        adts_.assign(pkt->data, pkt->data + pkt->size);
+        return;
+    }
+
+    // AAC（m4a 里是裸帧）：补 7 字节 ADTS 头
+    static const int kRates[] = {96000, 88200, 64000, 48000, 44100, 32000, 24000,
+                                 22050, 16000, 12000, 11025, 8000, 7350};
+    int rateIdx = 4;  // 44100 兜底
+    for (int i = 0; i < 13; ++i) {
+        if (kRates[i] == par->sample_rate) {
+            rateIdx = i;
+            break;
+        }
+    }
+    const int profile = par->profile >= 0 ? par->profile : 1;  // AAC-LC = 1
+    const int channels = par->ch_layout.nb_channels > 0 ? par->ch_layout.nb_channels : hwCh_;
+    const int frameLen = 7 + pkt->size;
+
+    adts_.resize((size_t)frameLen);
+    uint8_t *a = adts_.data();
+    a[0] = 0xFF;
+    a[1] = 0xF1;  // MPEG-4, layer 0, 无 CRC
+    a[2] = (uint8_t)((profile << 6) | (rateIdx << 2) | (channels >> 2));
+    a[3] = (uint8_t)(((channels & 3) << 6) | ((frameLen >> 11) & 0x3));
+    a[4] = (uint8_t)((frameLen >> 3) & 0xFF);
+    a[5] = (uint8_t)(((frameLen & 7) << 5) | 0x1F);
+    a[6] = 0xFC;
+    memcpy(a + 7, pkt->data, (size_t)pkt->size);
+}
+
+int AudioDecoder::HwSwrToPending(const uint8_t *data, int samples, int srcRate, int outRate,
+                                 int outChannels) {
+    // 按容器时长截断：硬解可能多出 priming/padding，超过期望采样数的部分直接丢弃
+    if (hwExpectedSamples_ > 0) {
+        const int64_t remain = hwExpectedSamples_ - hwSrcSamplesOut_;
+        if (remain <= 0) {
+            eof_ = true;
+            OH_LOG_INFO(LOG_APP,
+                        "[decoder] route=%{public}s eof(reached expected %{public}lld samples)",
+                        route_.c_str(), hwExpectedSamples_);
+            return AVERROR_EOF;
+        }
+        if ((int64_t)samples > remain) samples = (int)remain;
+    }
+    hwSrcSamplesOut_ += samples;
+    if (swrHw_ == nullptr) {
+        AVChannelLayout outLayout;
+        AVChannelLayout inLayout;
+        av_channel_layout_default(&outLayout, outChannels);
+        av_channel_layout_default(&inLayout, hwCh_ > 0 ? hwCh_ : outChannels);
+
+        SwrContext *swr = nullptr;
+        int r = swr_alloc_set_opts2(&swr, &outLayout, AV_SAMPLE_FMT_S16, outRate,
+                                    &inLayout, AV_SAMPLE_FMT_S16, srcRate, 0, nullptr);
+        av_channel_layout_uninit(&outLayout);
+        av_channel_layout_uninit(&inLayout);
+        if (r < 0 || swr == nullptr) {
+            SetError("swr_alloc_set_opts2(hw): " + AvErr(r));
+            return r < 0 ? r : AVERROR(ENOMEM);
+        }
+        if (swr_init(swr) < 0) {
+            swr_free(&swr);
+            SetError("swr_init(hw) failed");
+            return AVERROR(EINVAL);
+        }
+        swrHw_ = swr;
+    }
+
+    const int est = (int)av_rescale_rnd(samples, outRate, srcRate, AV_ROUND_UP) + 256;
+    pending_.resize((size_t)est * outChannels * 2);
+    uint8_t *dst[1] = {pending_.data()};
+    const uint8_t *in[1] = {data};
+    const int got = swr_convert((SwrContext *)swrHw_, dst, est, in, samples);
+    if (got < 0) {
+        SetError("swr_convert(hw): " + AvErr(got));
+        return got;
+    }
+    pending_.resize((size_t)got * outChannels * 2);
+    return 0;
+}
+
+void AudioDecoder::FallbackToSoftware(const std::string &why) {
+    OH_LOG_WARN(LOG_APP, "[decoder] fallback to ffmpeg: %{public}s (stage=%{public}s)", why.c_str(),
+                HwStageName());
+    hwStage_.store(5);
+    if (hw_) {
+        const bool nothingDecoded = hw_->outSamples() == 0;
+        // 实例可能已经卡死：把 Flush/Stop/Destroy 丢到后台线程，解码线程立刻继续
+        hw_->AbandonAsync();
+        hw_.reset();
+        if (nothingDecoded) {
+            // 硬解还没产出过任何数据：回到文件开头用软解重解，保证一个字节不差
+            AVFormatContext *fmt = (AVFormatContext *)fmt_;
+            AVCodecContext *dec = (AVCodecContext *)dec_;
+            if (fmt != nullptr && streamIndex_ >= 0) {
+                av_seek_frame(fmt, streamIndex_, 0, AVSEEK_FLAG_BACKWARD);
+            }
+            if (dec != nullptr) avcodec_flush_buffers(dec);
+            pending_.clear();
+            pendingPos_ = 0;
+            flushSent_ = false;
+            OH_LOG_INFO(LOG_APP, "[decoder] fallback before first output -> rewind to 0");
+        }
+    }
+    if (swrHw_) {
+        swr_free((SwrContext **)&swrHw_);
+        swrHw_ = nullptr;
+    }
+    // 不 seek、不清 pending：后续包直接交给 FFmpeg 从当前位置续解，避免丢帧/重复
+    route_ = "ffmpeg(fallback)";
+    routeWhy_ = why;
+    flushSent_ = false;
+    hwStage_.store(0);
+}
+
+int AudioDecoder::HwFillPending(int outRate, int outChannels) {
+    AVFormatContext *fmt = (AVFormatContext *)fmt_;
+    AVPacket *pkt = (AVPacket *)packet_;
+    const int srcRate = hwRate_ > 0 ? hwRate_ : outRate;
+    // 非阻塞轮询 + 1ms 让出；期间每轮都检查取消标志，Stop 能及时返回
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+
+    for (;;) {
+        if (stopRequested_.load()) {
+            OH_LOG_INFO(LOG_APP, "[decoder] hw cancelled by stop");
+            return AVERROR_EXIT;
+        }
+        if (std::chrono::steady_clock::now() > deadline) {
+            if (hwEosSent_) {
+                const bool shortTail = hwExpectedSamples_ > 0 &&
+                                       hw_->outSamples() + 1024 < hwExpectedSamples_;
+                if (shortTail && hwDeadlineExt_ < 2) {
+                    // 尾部明显少了：再给 2 秒，避免截断
+                    hwDeadlineExt_++;
+                    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+                    OH_LOG_WARN(LOG_APP,
+                                "[decoder] short tail (got=%{public}lld expect~%{public}lld), extend wait #%{public}d",
+                                hw_->outSamples(), hwExpectedSamples_, hwDeadlineExt_);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
+                if (swrHw_ != nullptr) {
+                    const int kMax = 4096;
+                    pending_.resize((size_t)kMax * outChannels * 2);
+                    uint8_t *dst[1] = {pending_.data()};
+                    const int got = swr_convert((SwrContext *)swrHw_, dst, kMax, nullptr, 0);
+                    if (got > 0) {
+                        pending_.resize((size_t)got * outChannels * 2);
+                        return 0;
+                    }
+                    pending_.clear();
+                }
+                eof_ = true;
+                OH_LOG_INFO(LOG_APP,
+                            "[decoder] route=%{public}s eof(timeout after EOS) pushed=%{public}lld inBytes=%{public}lld outBytes=%{public}lld outSamples=%{public}lld",
+                            route_.c_str(), hw_->pushedPackets(), hw_->pushedBytes(), hw_->outBytes(),
+                            hw_->outSamples());
+                return AVERROR_EOF;
+            }
+            FallbackToSoftware("no progress (>2s)");
+            return StreamFillPending(outRate, outChannels);
+        }
+
+        std::string why;
+        std::vector<uint8_t> pcm;
+        int samples = 0;
+        hwStage_.store(1);
+        const int pr = hw_->Pull(&pcm, &samples, &why);
+        hwStage_.store(0);
+
+        if (pr == 0) {
+            if (samples > 0) {
+                hwEosIdle_ = 0;
+                return HwSwrToPending(pcm.data(), samples, srcRate, outRate, outChannels);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        if (pr == 2) {
+            // 收到系统 EOS 标记：不立刻结束，后面再等 100ms 确认没有尾部数据
+            hwGotEos_ = true;
+            hwEosIdle_ = 0;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        if (pr < 0) {
+            FallbackToSoftware(why);
+            return StreamFillPending(outRate, outChannels);
+        }
+
+        // pr == 1：暂时没有输出
+        if (hwEosSent_) {
+            ++hwEosIdle_;
+            // 收到 EOS 标记：再等 100ms（20 次）确认真的没数据；
+            // 没收到标记：维持 500ms 空闲判定，兼容不回显 EOS 的设备（如 192k FLAC）
+            const int limit = hwGotEos_ ? 20 : 500;
+            if (hwEosIdle_ >= limit) {
+                if (swrHw_ != nullptr) {
+                    const int kMax = 4096;
+                    pending_.resize((size_t)kMax * outChannels * 2);
+                    uint8_t *dst[1] = {pending_.data()};
+                    const int got = swr_convert((SwrContext *)swrHw_, dst, kMax, nullptr, 0);
+                    if (got > 0) {
+                        pending_.resize((size_t)got * outChannels * 2);
+                        hwEosIdle_ = 0;
+                        return 0;
+                    }
+                    pending_.clear();
+                }
+                const bool shortTail = hwExpectedSamples_ > 0 &&
+                                       hw_->outSamples() + 1024 < hwExpectedSamples_;
+                if (shortTail && hwEosIdle_ < limit + 400) {
+                    // 尾部还没吐完：继续等最多 400ms，别急着截断
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
+                eof_ = true;
+                OH_LOG_INFO(LOG_APP,
+                            "[decoder] route=%{public}s eof(idle %{public}dms eos=%{public}d) pushed=%{public}lld inBytes=%{public}lld outSamples=%{public}lld expect~%{public}lld%{public}s",
+                            route_.c_str(), hwEosIdle_, hwGotEos_ ? 1 : 0, hw_->pushedPackets(),
+                            hw_->pushedBytes(), hw_->outSamples(), hwExpectedSamples_,
+                            shortTail ? " SHORT" : "");
+                return AVERROR_EOF;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+
+        hwStage_.store(2);
+        int r = av_read_frame(fmt, pkt);
+        hwStage_.store(0);
+        if (r == AVERROR_EOF) {
+            hwStage_.store(3);
+            const int er = hw_->SendEos(&why);
+            hwStage_.store(0);
+            if (er == 1) {
+                if (++hwEosTry_ >= 100) {
+                    // 送不进 EOS 就不要死磕：跳过 EOS，靠空闲超时正常收尾
+                    OH_LOG_WARN(LOG_APP, "[decoder] skip EOS after %{public}d retries", hwEosTry_);
+                    hwEosSent_ = true;
+                    hwEosIdle_ = 0;
+                    continue;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;  // 输入缓冲满，先拉输出，下一轮重试
+            }
+            if (er < 0) {
+                FallbackToSoftware(why);
+                return StreamFillPending(outRate, outChannels);
+            }
+            hwEosSent_ = true;
+            hwEosIdle_ = 0;
+            hwEosTry_ = 0;
+            continue;
+        }
+        if (r < 0) {
+            SetError("av_read_frame(hw): " + AvErr(r));
+            return r;
+        }
+        if (pkt->stream_index != streamIndex_) {
+            av_packet_unref(pkt);
+            continue;
+        }
+
+        BuildElementary(pkt);
+        AVStream *st = fmt->streams[streamIndex_];
+        const int64_t ptsUs = (pkt->pts != AV_NOPTS_VALUE)
+                                  ? av_rescale_q(pkt->pts, st->time_base, AVRational{1, 1000000})
+                                  : hwLastPtsUs_;
+        hwStage_.store(4);
+        // 刚 Start 的 codec 偶尔会瞬时返回 INVALID_VAL，重试一小会儿再判失败
+        int push = -1;
+        for (int attempt = 0; attempt < 200; ++attempt) {
+            why.clear();
+            push = hw_->Push(adts_.data(), (int)adts_.size(), ptsUs, &why);
+            if (push >= 0) break;
+            if (why.find("INVALID_VAL") == std::string::npos) break;
+            if (stopRequested_.load()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        hwStage_.store(0);
+        if (push == 0) {
+            hwLastPtsUs_ = ptsUs;
+            av_packet_unref(pkt);
+            continue;
+        }
+        if (push == 1) {
+            av_packet_unref(pkt);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        // push < 0：回退前先把当前包交给 FFmpeg 软解，避免丢这一帧
+        {
+            AVCodecContext *dec = (AVCodecContext *)dec_;
+            if (dec != nullptr) {
+                const int sr = avcodec_send_packet(dec, pkt);
+                OH_LOG_WARN(LOG_APP,
+                            "[decoder] fallback recover packet bytes=%{public}d send_packet=%{public}d",
+                            pkt->size, sr);
+            }
+        }
+        av_packet_unref(pkt);
+        FallbackToSoftware(why);
+        return StreamFillPending(outRate, outChannels);
+    }
 }

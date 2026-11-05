@@ -41,6 +41,8 @@ private:
     int BuildRenderer();
     int SelfCheck();  // 用流式路径整解一遍算哈希，用来和桌面参考值对拍
     void SetError(const std::string &what);
+    // 有界 join：解码线程 1.5s 内没退出就 detach 并放弃 decoder，保证 UI 不 ANR
+    void JoinThreadOrDetach();
 
     size_t RingWrite(const uint8_t *data, size_t len);
     size_t RingRead(uint8_t *data, size_t len);
@@ -52,6 +54,7 @@ private:
     std::thread thread_;
 
     std::atomic<bool> running_{false};
+    std::atomic<bool> threadDone_{false};
     std::atomic<bool> decoderEof_{false};
     std::atomic<bool> gotFirstData_{false};
     std::atomic<int> state_{0};              // 0 idle / 1 playing / 2 paused / 3 stopped

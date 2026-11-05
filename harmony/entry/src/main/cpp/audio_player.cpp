@@ -42,6 +42,13 @@ const char *StateName(int state) {
     }
 }
 
+// 临时关掉硬解（自检对拍用），析构时恢复原状态
+struct HwDisableGuard {
+    bool prev;
+    HwDisableGuard() : prev(HardwareDecodeEnabled()) { SetHardwareDecodeEnabled(false); }
+    ~HwDisableGuard() { SetHardwareDecodeEnabled(prev); }
+};
+
 int64_t NowUs() {
     return (int64_t)std::chrono::duration_cast<std::chrono::microseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
@@ -241,6 +248,7 @@ void AudioPlayer::DecodeLoop() {
             break;
         }
         if (ret < 0) {
+            if (!running_.load()) break;  // Stop 触发的取消，不算错误
             SetError("decode: " + decoder_->LastError());
             decoderEof_.store(true);
             break;
@@ -271,16 +279,18 @@ void AudioPlayer::DecodeLoop() {
             const uint64_t calls = decodeCalls_.load();
             const int64_t frames = framesDecoded_.load();
             const double avgUs = frames > 0 ? (double)decodeUs_.load() / (double)frames : 0.0;
-            char line[220];
+            const std::string route = decoder_ ? decoder_->Route() : "?";
+            char line[260];
             snprintf(line, sizeof(line),
-                     "decode_avg=%.3fms/frame calls=%llu cpu=%d%% rss=%lldKB ring=%dKB written=%lldKB",
-                     avgUs / 1000.0, (unsigned long long)calls, pct, rssKb_.load(),
+                     "route=%s decode_avg=%.3fms/frame calls=%llu cpu=%d%% rss=%lldKB ring=%dKB written=%lldKB",
+                     route.c_str(), avgUs / 1000.0, (unsigned long long)calls, pct, rssKb_.load(),
                      (int)(RingUsed() / 1024), (long long)(written / 1024));
             OH_LOG_INFO(LOG_APP, "[player] perf %{public}s", line);
         }
     }
     OH_LOG_INFO(LOG_APP, "[player] decode loop end, pcm=%{public}lld bytes, eof=%{public}d",
                 (long long)written, decoderEof_.load() ? 1 : 0);
+    threadDone_.store(true);
 }
 
 // 用流式路径把整个文件解两遍：
@@ -289,6 +299,9 @@ void AudioPlayer::DecodeLoop() {
 // 只有第一次 Open 做，避免每次重播都多解两遍。
 int AudioPlayer::SelfCheck() {
     if (!pcmHash_.empty()) return 0;
+
+    // 自检要和桌面 ffmpeg 对拍，必须走软解；硬解的 S16 舍入可能不同
+    HwDisableGuard hwGuard;
 
     AudioInfo info;
     {
@@ -372,6 +385,7 @@ int AudioPlayer::SelfCheck() {
 
 int AudioPlayer::Open(const std::string &path) {
     Release();
+    SetError("");  // 清掉上一次会话遗留的错误串
     path_ = path;
     decoder_.reset(new AudioDecoder());
 
@@ -385,12 +399,20 @@ int AudioPlayer::Open(const std::string &path) {
     codec_ = info.codec;
     durationMs_ = info.durationMs;
 
-    SelfCheck();  // 哈希对拍，失败不影响播放
+    // 自检要对整个文件解两遍，只对短样例做；长文件会拖慢打开速度
+    if (durationMs_ > 10000) {
+        OH_LOG_INFO(LOG_APP, "[player] skip selfcheck for long file (%{public}lldms)",
+                    (long long)durationMs_);
+    } else {
+        SelfCheck();  // 哈希对拍，失败不影响播放
+    }
 
     if (BuildRenderer() != 0) return -1;
 
-    OH_LOG_INFO(LOG_APP, "[player] open ok codec=%{public}s duration=%{public}lldms pcmBytes=%{public}lld hash=%{public}s",
-                codec_.c_str(), (long long)durationMs_, (long long)pcmBytes_, pcmHash_.c_str());
+    OH_LOG_INFO(LOG_APP,
+                "[player] open ok codec=%{public}s duration=%{public}lldms pcmBytes=%{public}lld hash=%{public}s route=%{public}s reason=%{public}s",
+                codec_.c_str(), (long long)durationMs_, (long long)pcmBytes_, pcmHash_.c_str(),
+                decoder_ ? decoder_->Route().c_str() : "?", decoder_ ? decoder_->RouteReason().c_str() : "");
     return 0;
 }
 
@@ -402,6 +424,7 @@ int AudioPlayer::OpenFd(int fd) {
         return -1;
     }
     Release();
+    SetError("");  // 清掉上一次会话遗留的错误串
     srcFd_ = keep;
     path_ = "fd://" + std::to_string(fd);
 
@@ -427,6 +450,7 @@ int AudioPlayer::OpenFd(int fd) {
 }
 
 int AudioPlayer::Play() {
+    SetError("");  // 每次显式播放都从干净状态开始
     if (path_.empty()) {
         SetError("player: no file opened");
         return -1;
@@ -464,6 +488,7 @@ int AudioPlayer::Play() {
     rssKb_.store(0);
 
     // 先起解码线程，让 ring 预填 200ms 再开渲染器 —— 否则启动阶段必然欠载
+    threadDone_.store(false);
     running_.store(true);
     thread_ = std::thread(&AudioPlayer::DecodeLoop, this);
 
@@ -495,13 +520,48 @@ int AudioPlayer::Pause() {
     return 0;
 }
 
+void AudioPlayer::JoinThreadOrDetach() {
+    if (!thread_.joinable()) return;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    while (!threadDone_.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (threadDone_.load()) {
+        thread_.join();
+        OH_LOG_INFO(LOG_APP, "[player] decode thread joined");
+        return;
+    }
+    // 绝不让 UI 线程无限等：detach 并放弃该 decoder（泄漏一个实例，换取不 ANR）。
+    // 只有卡在 OH_AudioCodec_* 才熔断；卡在 av_read_frame 是 I/O 阻塞，允许后续继续尝试硬解。
+    const char *stage = decoder_ ? decoder_->HwStageName() : "?";
+    const bool ohcodecStuck = decoder_ && decoder_->HwStuckInOhCodec();
+    if (ohcodecStuck) {
+        OH_LOG_ERROR(LOG_APP, "[player] decode thread stuck >1.5s at %{public}s, circuit breaker ON",
+                     stage);
+        MarkOhCodecFatal();  // 本进程内不再创建任何 OH 解码实例
+    } else {
+        OH_LOG_ERROR(LOG_APP,
+                     "[player] decode thread stuck >1.5s at %{public}s, I/O stall, leak thread only (no breaker)",
+                     stage);
+    }
+    thread_.detach();
+    (void)decoder_.release();
+}
+
 int AudioPlayer::Stop() {
+    OH_LOG_INFO(LOG_APP, "[player] stop begin");
     running_.store(false);
-    if (thread_.joinable()) thread_.join();
+    if (decoder_) decoder_->RequestStop();  // 让 ReadPcm 里的硬解轮询尽快返回
+    JoinThreadOrDetach();
+    OH_LOG_INFO(LOG_APP, "[player] stop joined");
     if (renderer_ != nullptr) {
         OH_AudioRenderer_Stop(renderer_);
         OH_AudioRenderer_Flush(renderer_);
     }
+    OH_LOG_INFO(LOG_APP, "[player] stop renderer done");
+    // 主动释放系统解码器句柄，避免下一次 Open 抢不到 DSP / 上一个实例卡在 Stop
+    decoder_.reset();
+    OH_LOG_INFO(LOG_APP, "[player] stop decoder released");
     RingClear();
     decoderEof_.store(false);
     gotFirstData_.store(false);
@@ -519,14 +579,18 @@ int AudioPlayer::Stop() {
 
 void AudioPlayer::Release() {
     running_.store(false);
-    if (thread_.joinable()) thread_.join();
+    if (decoder_) decoder_->RequestStop();
+    JoinThreadOrDetach();
     if (renderer_ != nullptr) {
         OH_AudioRenderer_Stop(renderer_);
         OH_AudioRenderer_Release(renderer_);
         renderer_ = nullptr;
     }
     RingClear();
-    decoder_.reset();
+    if (decoder_) {
+        OH_LOG_INFO(LOG_APP, "[player] release decoder");
+        decoder_.reset();
+    }
     if (srcFd_ >= 0) {
         ::close(srcFd_);
         srcFd_ = -1;
@@ -594,6 +658,8 @@ std::string AudioPlayer::StatusJson() const {
        << ",\"pcmPeak\":" << pcmPeak_
        << ",\"pcmSrcBytes\":" << pcmSrcBytes_
        << ",\"finished\":" << (finished ? "true" : "false")
+       << ",\"route\":\"" << (decoder_ ? decoder_->Route() : "") << "\""
+       << ",\"routeReason\":\"" << (decoder_ ? decoder_->RouteReason() : "") << "\""
        << ",\"error\":\"" << LastError() << "\"}";
     return os.str();
 }

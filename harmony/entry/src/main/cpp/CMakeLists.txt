@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.5.0)
 project(ffmpegaudio)
 
+# ⚠️ 运行时依赖警告：libavcodec.so.63 的 DT_NEEDED 里包含 libmp3lame.so.0。
+# 打包 HAP 时必须把 prebuilt/<abi>/lib/libmp3lame.so.0 一起放进 entry/libs/<abi>/，
+# 否则 libavcodec 加载失败，NAPI 模块初始化直接崩，报 dlopen 相关错误。
+# build/install-into-hap.sh 已经处理这件事；手工拷贝时别漏。
+
 set(NATIVE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 # FFmpeg 产物位置：harmony/entry/libs/<abi>/{lib*.so.*, include/}
@@ -42,7 +47,9 @@ add_library(entry SHARED
     napi_init.cpp
     decoder.cpp
     audio_player.cpp
-    transcoder.cpp)
+    transcoder.cpp
+    hardware_probe.cpp
+    ohcodec_decoder.cpp)
 
 target_include_directories(entry PRIVATE ${NATIVE_ROOT})
 target_compile_options(entry PRIVATE -pthread)
@@ -51,6 +58,10 @@ target_link_libraries(entry PUBLIC
     libace_napi.z.so
     libhilog_ndk.z.so
     libohaudio.so
+    # M3.0 硬解探针：AudioCodec + capability/mimetype + AVFormat/AVBuffer
+    libnative_media_acodec.so
+    libnative_media_codecbase.so
+    libnative_media_core.so
     ff_avformat
     ff_avcodec
     ff_avutil

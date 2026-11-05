@@ -13,6 +13,8 @@ struct Index {
   @State status: string = '未播放';
   @State logText: string = 'M1 自检：解 test.m4a / test.flac / test.opus 并落 WAV';
   @State busy: boolean = false;
+  @State hardwareOn: boolean = true;
+  @State copyPercent: number = -1;
   private timer: number = -1;
 
   aboutToDisappear(): void {
@@ -62,10 +64,56 @@ struct Index {
           })
       }
 
+      Row({ space: 8 }) {
+        Button('转码 → FLAC')
+          .fontSize(13)
+          .enabled(!this.busy)
+          .onClick(() => {
+            this.runTranscode('flac');
+          })
+        Button('转码 → WAV')
+          .fontSize(13)
+          .enabled(!this.busy)
+          .onClick(() => {
+            this.runTranscode('wav');
+          })
+        Button('路径 API 转码')
+          .fontSize(13)
+          .enabled(!this.busy)
+          .onClick(() => {
+            this.runTranscodeByPath('aac');
+          })
+      }
+
+      Button('M3.0 硬解探针（AAC/MP3/FLAC）')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => {
+          this.runHardwareProbe();
+        })
+
+      Button(this.hardwareOn ? '硬解开关：开（AAC）' : '硬解开关：关（走软解）')
+        .fontSize(13)
+        .onClick(() => {
+          this.hardwareOn = !this.hardwareOn;
+          try {
+            native.decoderSetHardware(this.hardwareOn);
+            this.status = `硬解开关已${this.hardwareOn ? '打开' : '关闭'}，重新点 Play 生效`;
+          } catch (e) {
+            this.status = `切换硬解失败: ${JSON.stringify(e)}`;
+          }
+        })
+
       Text(this.status)
         .fontSize(12)
         .fontFamily('monospace')
         .width('100%')
+
+      if (this.copyPercent >= 0) {
+        Progress({ value: this.copyPercent, total: 100, type: ProgressType.Linear })
+          .width('100%')
+          .color('#4CAF50')
+      }
 
       Divider()
 
@@ -168,48 +216,87 @@ struct Index {
       return;
     }
 
-    this.status = `已选择：${uri}\n正在打开…`;
+    this.status = `已选择：${uri}\n正在复制到本地沙箱…`;
     hilog.info(DOMAIN, TAG, 'picked uri=%{public}s', uri);
 
-    let fd = -1;
-    let openData = '';
+    // 外部 URI 可能是云盘/虚拟文件，先在应用层完整拷贝到沙箱，再交给基座
+    let local = '';
     try {
-      const file = fs.openSync(uri, fs.OpenMode.READ_ONLY);
-      fd = file.fd;
-      hilog.info(DOMAIN, TAG, 'fs.openSync ok, fd=%{public}d', fd);
-      try {
-        const openR = native.playerOpenFd(fd);
-        openData = openR.data;
-        if (!openR.ok) {
-          this.status = `解码器打开失败：${openR.data}`;
-          hilog.error(DOMAIN, TAG, 'playerOpenFd !ok: %{public}s', openR.data);
-          return;
-        }
-      } finally {
-        fs.closeSync(file);
-      }
+      local = await this.importToSandbox(uri);
     } catch (e) {
       const msg = JSON.stringify(e);
-      this.status = `打开文件失败（fd=${fd}）：${msg}`;
-      hilog.error(DOMAIN, TAG, 'open fd failed: %{public}s', msg);
+      this.status = `复制到沙箱失败：${msg}`;
+      hilog.error(DOMAIN, TAG, 'copy to sandbox failed: %{public}s', msg);
       return;
+    } finally {
+      this.copyPercent = -1;
     }
+    hilog.info(DOMAIN, TAG, 'imported local file: %{public}s', local);
 
-    hilog.info(DOMAIN, TAG, 'playerOpenFd ok: %{public}s', openData);
     try {
+      const openR = native.playerOpen(local);
+      if (!openR.ok) {
+        this.status = `解码器打开失败：${openR.data}`;
+        hilog.error(DOMAIN, TAG, 'playerOpen !ok: %{public}s', openR.data);
+        return;
+      }
       const playR = native.playerPlay();
       hilog.info(DOMAIN, TAG, 'playerPlay -> ok=%{public}s', String(playR.ok));
       if (!playR.ok) {
         this.status = `播放启动失败：${playR.data}`;
         return;
       }
-      this.status = `file: ${uri}\nplay: ${playR.data}`;
+      this.status = `file: ${local}\nplay: ${playR.data}`;
       this.startPolling();
     } catch (e) {
       const msg = JSON.stringify(e);
       this.status = `播放异常：${msg}`;
       hilog.error(DOMAIN, TAG, 'playerPlay failed: %{public}s', msg);
     }
+  }
+
+  // 把 picker 选中的 URI 流式复制到应用沙箱，带进度；返回本地路径。
+  // 注意：readSync/writeSync 的 options.offset 是「文件位置」而不是缓冲区偏移，
+  // 所以这里不传 options，读满缓冲后 slice 再写。
+  async importToSandbox(uri: string): Promise<string> {
+    const ctx = getContext(this) as common.UIAbilityContext;
+    const rawName = uri.split('/').pop();
+    const name = (rawName === undefined || rawName.length === 0) ? 'import.bin' : rawName;
+    const safe = name.replace(/[^A-Za-z0-9._-]/g, '_');
+    const dst = `${ctx.filesDir}/${Date.now()}_${safe}`;
+    const src = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+    const out = fs.openSync(dst, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+    try {
+      let total = 0;
+      try {
+        total = fs.statSync(src.fd).size;
+      } catch (e) {
+        total = 0;  // 云盘/虚拟文件可能拿不到 size，用“读到 EOF”为准
+      }
+      const buf = new ArrayBuffer(256 * 1024);
+      let done = 0;
+      this.copyPercent = total > 0 ? 0 : -1;
+      for (;;) {
+        const n = fs.readSync(src.fd, buf);
+        if (n <= 0) break;
+        fs.writeSync(out.fd, buf.slice(0, n));
+        done += n;
+        if (total > 0) {
+          this.copyPercent = Math.min(99, Math.floor(done * 100 / total));
+        }
+      }
+      this.copyPercent = 100;
+      const st = fs.statSync(dst);
+      hilog.info(DOMAIN, TAG, 'copied %{public}d bytes (stat total=%{public}d), dst size=%{public}d',
+                 done, total, st.size);
+      if (st.size <= 0) {
+        throw new Error(`复制结果为 0 字节（源 size=${total}）`);
+      }
+    } finally {
+      fs.closeSync(src);
+      fs.closeSync(out);
+    }
+    return dst;
   }
 
   // 转码示例：内置样例 play.m4a → aac/mp3/opus，完成后直接播放结果
@@ -259,6 +346,59 @@ struct Index {
       hilog.error(DOMAIN, TAG, 'transcode failed: %{public}s', msg);
     } finally {
       this.busy = false;
+    }
+  }
+
+  // 走路径的转码：native 直接 open 两个文件，验证 transcodeByPath
+  async runTranscodeByPath(format: string): Promise<void> {
+    this.stopPolling();
+    try {
+      native.playerStop();
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'playerStop before transcode failed: %{public}s', JSON.stringify(e));
+    }
+    this.busy = true;
+    this.status = `路径转码中（${format}）…`;
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('play.m4a');
+      const ext = format === 'aac' ? 'm4a' : format;
+      const dst = `${ctx.filesDir}/bypath.${ext}`;
+      hilog.info(DOMAIN, TAG, 'transcodeByPath %{public}s -> %{public}s (%{public}s)', src, dst, format);
+      const res = native.transcodeByPath(src, dst, format);
+      if (!res.ok) {
+        this.status = `路径转码失败（${format}）: ${res.data}`;
+        return;
+      }
+      const st = fs.statSync(dst);
+      this.status = `路径转码成功（${format}）: ${st.size} B\n${dst}\n${res.data}`;
+      const openR = native.playerOpen(dst);
+      if (openR.ok) {
+        const playR = native.playerPlay();
+        if (playR.ok) {
+          this.status += '\n已开始播放转码结果';
+          this.startPolling();
+        }
+      }
+    } catch (e) {
+      const msg = JSON.stringify(e);
+      this.status = `路径转码异常（${format}）: ${msg}`;
+      hilog.error(DOMAIN, TAG, 'transcodeByPath failed: %{public}s', msg);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  // M3.0：探测系统硬解能力（AAC/MP3/FLAC 的 capability、支持采样率、能否 Configure/Start）
+  runHardwareProbe(): void {
+    try {
+      const res = native.hardwareProbe();
+      this.status = res.ok ? `硬解探针完成，详见下方日志` : `探针失败: ${res.data}`;
+      this.logText = res.ok ? res.data : res.data;
+      hilog.info(DOMAIN, TAG, 'hardwareProbe ok=%{public}s', String(res.ok));
+    } catch (e) {
+      this.status = `探针异常: ${JSON.stringify(e)}`;
+      hilog.error(DOMAIN, TAG, 'hardwareProbe failed: %{public}s', JSON.stringify(e));
     }
   }
 

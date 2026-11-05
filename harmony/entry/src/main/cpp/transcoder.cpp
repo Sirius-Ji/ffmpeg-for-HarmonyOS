@@ -23,7 +23,6 @@ extern "C" {
 
 namespace {
 
-constexpr int kOutRate = 48000;
 constexpr int kOutChannels = 2;
 
 std::string AvErr(int err) {
@@ -32,27 +31,38 @@ std::string AvErr(int err) {
     return std::string(buf);
 }
 
-// 输出档位：编码器 / 封装器 / 码率 / 是否实验性
+// 输出档位：编码器 / 封装器 / 码率 / 目标采样率（0 = 跟随源）/ 是否实验性
 struct Profile {
     const char *name;
     enum AVCodecID codecId;
     const char *muxer;
     const char *container;
     int bitrate;
+    int targetRate;
     bool experimental;
 };
 
 bool PickProfile(const std::string &format, Profile *p) {
     if (format == "aac") {
-        *p = {"aac", AV_CODEC_ID_AAC, "mp4", "mp4/m4a", 128000, false};
+        // ipod 是 movenc 的 M4A 变体，©lyr / iTunes 元数据兼容性最好
+        *p = {"aac", AV_CODEC_ID_AAC, "ipod", "m4a (ipod)", 128000, 48000, false};
         return true;
     }
     if (format == "mp3") {
-        *p = {"mp3", AV_CODEC_ID_MP3, "mp3", "mp3", 192000, false};
+        *p = {"mp3", AV_CODEC_ID_MP3, "mp3", "mp3", 192000, 48000, false};
         return true;
     }
     if (format == "opus") {
-        *p = {"opus", AV_CODEC_ID_OPUS, "opus", "opus/ogg", 96000, true};
+        *p = {"opus", AV_CODEC_ID_OPUS, "opus", "opus/ogg", 96000, 48000, true};
+        return true;
+    }
+    if (format == "flac") {
+        // 无损：采样率跟随源（编码器支持上限内），不强行降到 48k
+        *p = {"flac", AV_CODEC_ID_FLAC, "flac", "flac", 0, 0, false};
+        return true;
+    }
+    if (format == "wav") {
+        *p = {"wav", AV_CODEC_ID_PCM_S16LE, "wav", "wav (pcm_s16le)", 0, 0, false};
         return true;
     }
     return false;
@@ -67,6 +77,29 @@ enum AVSampleFormat PickSampleFormat(const AVCodecContext *ctx, const AVCodec *c
         return static_cast<const enum AVSampleFormat *>(cfgs)[0];
     }
     return AV_SAMPLE_FMT_FLTP;
+}
+
+// 采样率兜底：LAME 最高只支持 48 kHz，FLAC/WAV 则跟随源。
+// 先找 <= want 的最大支持值；全都不满足就取列表里最大的。
+int PickSampleRate(const AVCodecContext *ctx, const AVCodec *codec, int want) {
+    const void *cfgs = nullptr;
+    int count = 0;
+    if (avcodec_get_supported_config(ctx, codec, AV_CODEC_CONFIG_SAMPLE_RATE, 0, &cfgs, &count) >= 0 &&
+        cfgs != nullptr && count > 0) {
+        const int *rates = static_cast<const int *>(cfgs);
+        int best = 0;
+        int maxRate = 0;
+        for (int i = 0; i < count; ++i) {
+            const int r = rates[i];
+            if (r <= 0) break;
+            if (r > maxRate) maxRate = r;
+            if (r == want) return want;
+            if (r <= want && r > best) best = r;
+        }
+        if (best > 0) return best;
+        if (maxRate > 0) return maxRate;
+    }
+    return want;
 }
 
 // 所有资源集中在这里，析构时按依赖顺序释放
@@ -186,11 +219,17 @@ int TranscodeAudio(int srcFd, int dstFd, const std::string &format, std::string 
     if (encCodec == nullptr) return fail(std::string(prof.name) + " encoder not compiled in");
     c.enc = avcodec_alloc_context3(encCodec);
     if (c.enc == nullptr) return fail("avcodec_alloc_context3(enc) failed");
-    c.enc->sample_rate = kOutRate;
+    const int wantRate = prof.targetRate > 0 ? prof.targetRate : c.dec->sample_rate;
+    const int gotRate = PickSampleRate(c.enc, encCodec, wantRate);
+    c.enc->sample_rate = gotRate;
     av_channel_layout_default(&c.enc->ch_layout, kOutChannels);
     c.enc->sample_fmt = PickSampleFormat(c.enc, encCodec);
-    c.enc->bit_rate = prof.bitrate;
-    c.enc->time_base = AVRational{1, kOutRate};
+    if (prof.bitrate > 0) c.enc->bit_rate = prof.bitrate;
+    c.enc->time_base = AVRational{1, gotRate};
+    if (gotRate != wantRate) {
+        OH_LOG_WARN(LOG_APP, "[transcode] rate fallback %{public}d -> %{public}d (encoder max)",
+                    wantRate, gotRate);
+    }
     if (prof.experimental) {
         // Opus 原生编码器标了 AV_CODEC_CAP_EXPERIMENTAL，不设这个会被 avcodec_open2 拒绝
         c.enc->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
@@ -212,7 +251,7 @@ int TranscodeAudio(int srcFd, int dstFd, const std::string &format, std::string 
     ret = avformat_write_header(c.out, nullptr);
     if (ret < 0) return fail("avformat_write_header: " + AvErr(ret));
 
-    // ---------- 重采样：源 → 48k/2ch/FLTP ----------
+    // ---------- 重采样：源 → 编码器采样率 / 2ch ----------
     ret = swr_alloc_set_opts2(&c.swr, &c.enc->ch_layout, c.enc->sample_fmt, c.enc->sample_rate,
                               &c.dec->ch_layout, c.dec->sample_fmt, c.dec->sample_rate, 0, nullptr);
     if (ret < 0 || c.swr == nullptr) return fail("swr_alloc_set_opts2 failed");
@@ -392,13 +431,13 @@ int TranscodeAudio(int srcFd, int dstFd, const std::string &format, std::string 
     avio_flush(c.outAvio);
 
     const int64_t bytes = c.outAvio->pos;
-    const int64_t durationMs = totalFrames * 1000 / kOutRate;
+    const int64_t durationMs = totalFrames * 1000 / c.enc->sample_rate;
 
     std::ostringstream os;
     os << "{\"input\":{\"codec\":\"" << decCodec->name << "\",\"sampleRate\":" << c.dec->sample_rate
        << ",\"channels\":" << c.dec->ch_layout.nb_channels << "}"
        << ",\"output\":{\"format\":\"" << prof.name << "\",\"codec\":\"" << encCodec->name
-       << "\",\"container\":\"" << prof.container << "\",\"sampleRate\":" << kOutRate
+       << "\",\"container\":\"" << prof.container << "\",\"sampleRate\":" << c.enc->sample_rate
        << ",\"channels\":" << kOutChannels << ",\"bitRate\":" << prof.bitrate << "}"
        << ",\"decodedFrames\":" << decodedFrames << ",\"outFrames\":" << totalFrames
        << ",\"packets\":" << totalPackets << ",\"bytes\":" << bytes
@@ -408,7 +447,7 @@ int TranscodeAudio(int srcFd, int dstFd, const std::string &format, std::string 
     OH_LOG_INFO(LOG_APP,
                 "[transcode] done format=%{public}s codec=%{public}s in=%{public}d/%{public}d out=%{public}d/%{public}d bytes=%{public}lld frames=%{public}lld",
                 prof.name, encCodec->name, c.dec->sample_rate, c.dec->ch_layout.nb_channels,
-                kOutRate, kOutChannels, (long long)bytes, (long long)totalFrames);
+                c.enc->sample_rate, kOutChannels, (long long)bytes, (long long)totalFrames);
     return 0;
 }
 

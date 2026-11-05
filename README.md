@@ -101,11 +101,21 @@ entry/libs/arm64-v8a/libswresample.so.7
 entry/libs/arm64-v8a/libmp3lame.so.0      # MP3 编码的运行时依赖（不开 MP3 编码可不带）
 ```
 
+> ⚠️ **`libmp3lame.so.0` 是硬依赖，不是可选项。**
+> `libavcodec.so.63` 的 `DT_NEEDED` 里写着它，只要漏掉这一个文件，`libavcodec` 就加载失败，
+> 整个 NAPI 模块初始化会直接崩（不是"MP3 转码不可用"，是**整个库都用不了**）。
+> 关掉 MP3 编码重新编译 FFmpeg 才能不带它；否则必须和 4 个 FFmpeg 库放在同一目录。
+> 用 `build/install-into-hap.sh` 同步可以避免手动漏拷。
+
 **三条硬性约束**（踩过的坑，别重犯）：
 
 1. 文件名必须带大版本号（`libavcodec.so.63`），改成 `libavcodec.so` 会加载失败——`SONAME` 是前者。
 2. `libc++_shared.so` 由 hvigor 自动打包；如果你把 `.so` 放在别处，ABI 目录要自己保证一致。
 3. 库是 **16 KB 页对齐**（`PT_LOAD align = 0x4000`），别用老工具链重链成 4 KB。
+
+> **Breaking Change（v0.1.1 起）**：`libavfilter` 已彻底移除（库、头文件、`include/libavfilter/` 都没有了）。
+> 旧代码里的 `#include <libavfilter/avfilter.h>` 和 `ff_avfilter` 目标会直接编译失败，
+> 完整迁移说明见 [CHANGELOG.md](CHANGELOG.md)。
 
 C++ 侧的参考实现（解封装 → 软解 → 重采样 → OHAudio 播放）在
 [`harmony/entry/src/main/cpp/decoder.cpp`](harmony/entry/src/main/cpp/decoder.cpp) 和
@@ -122,8 +132,9 @@ fs.closeSync(inFile);
 fs.closeSync(outFile);
 ```
 
-demo 里有三个按钮（**转码 → AAC / MP3 / Opus**），会把内置 `play.m4a` 转成
-`filesDir/transcoded.{m4a,mp3,opus}` 并直接播放结果，状态栏能看到输入/输出参数、包数、字节数。
+demo 里有五个转码按钮（**AAC / MP3 / Opus / FLAC / WAV**）和一个**路径 API** 按钮，
+会把内置 `play.m4a` 转成 `filesDir/transcoded.{m4a,mp3,opus,flac,wav}` 并直接播放结果；
+路径按钮走 `transcodeByPath()`，由 native 层直接打开两个文件，不经过 ArkTS 的 fd。
 
 > LAME 交叉编译、三种编码器帧长差异、`avcodec_get_supported_config` 这些坑，
 > 完整记录在 [docs/06-transcode.md](docs/06-transcode.md)。
@@ -241,4 +252,8 @@ LICENSES/       # 第三方许可证全文
   `avctx->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL`，且只支持 48 kHz / 2ch。
   帧长对齐到 960（20 ms）；我们的转码器按 `enc->frame_size` 切片，不写死。
 - 视频只编了硬解封装（`h264_oh` / `hevc_oh`），**没有视频编码、也没有视频软解**。
-- 大文件建议用 demo 里的"选歌播放"（picker → URI → fd），不要复制进沙箱：`playerOpenFd` 内部 `dup`，调用方拿到返回值即可关自己的 fd。
+- **外部 URI / 云盘 I/O**：受限于系统的底层 I/O 机制，直接读取外部云盘或未下载完的虚拟文件 URI 时，
+  若发生内核级阻塞，底层会在 **1.5 秒超时后 detach 该解码线程**（泄漏一个线程，App 不会 ANR）。
+  **建议集成方在应用层（ArkTS）先把网络文件下载到本地沙箱，再把本地路径传给基座解码/转码**
+  ——demo 的"选歌播放"现在就是这么做的（带复制进度条）。
+- 大文件建议先拷贝到应用沙箱再 `playerOpen(path)`；`playerOpenFd` 仍然可用，但只适合**本地真实文件**的 fd。
