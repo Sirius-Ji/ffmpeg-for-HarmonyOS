@@ -16,6 +16,14 @@
 - **AAC ADTS profile 改为查表映射**（LC/HE/HEv2），修正 HE-AAC 硬解“创建成功但无输出”。
 - **批量转码默认软解**：NAPI 转码接口明确不创建 `OH_AudioCodec` 实例，转码瓶颈在编码器。
 - 文档口径修正：`libmp3lame.so.0` 明确为**强制运行时依赖**；M3 状态改为 M3.0/M3.1 已合入。
+- README 增补**已知限制**：网易云「臻音全景声」等 Dolby Atmos（AC-4）m4a 不支持（FFmpeg 主线无 AC-4 解码器）。
+
+### 修复
+
+- AAC 硬解送 EOS 时偶发 `INVALID_VAL`，不再误触发 fallback / 硬件黑名单，避免播放尾部被截断。
+- 音频流选择改为自行扫描并精确报错：`unsupported audio codec: <name> (not compiled in)`，
+  并输出每条流的 `codec` / `codec_tag`，不再把“不支持的编码”误报成“没有音频流”。
+- 硬解回退只统计数据路径上的失败；EOS 阶段的瞬时错误不拉黑。
 
 ## v0.1.2（2026-11-05）
 

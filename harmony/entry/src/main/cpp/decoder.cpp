@@ -242,11 +242,38 @@ int AudioDecoder::FinishOpen(AudioInfo *info) {
         return ret;
     }
 
+    // 自己选音频流：av_find_best_stream 会跳过“没有解码器”的流，
+    // 结果把“不支持的音频编码”误报成“没有音频流”。这里分开报错。
     const AVCodec *codec = nullptr;
-    streamIndex_ = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, &codec, 0);
+    streamIndex_ = -1;
+    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+        AVStream *s = fmt->streams[i];
+        if (s->codecpar != nullptr && s->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            streamIndex_ = (int)i;
+            codec = avcodec_find_decoder(s->codecpar->codec_id);
+            break;
+        }
+    }
     if (streamIndex_ < 0) {
+        for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+            AVStream *s = fmt->streams[i];
+            if (s->codecpar == nullptr) continue;
+            OH_LOG_WARN(LOG_APP,
+                        "[decoder] stream#%{public}u type=%{public}d codec=%{public}s id=%{public}d",
+                        i, (int)s->codecpar->codec_type,
+                        avcodec_get_name(s->codecpar->codec_id), (int)s->codecpar->codec_id);
+        }
         SetError("no audio stream");
-        return streamIndex_;
+        return AVERROR(EINVAL);
+    }
+    if (codec == nullptr) {
+        const AVCodecParameters *p = fmt->streams[streamIndex_]->codecpar;
+        const std::string name = avcodec_get_name(p->codec_id);
+        OH_LOG_ERROR(LOG_APP,
+                     "[decoder] audio codec '%{public}s' not compiled in (id=%{public}d tag=0x%{public}08x)",
+                     name.c_str(), (int)p->codec_id, (unsigned)p->codec_tag);
+        SetError("unsupported audio codec: " + name + " (not compiled in)");
+        return AVERROR_DECODER_NOT_FOUND;
     }
 
     AVStream *st = fmt->streams[streamIndex_];
@@ -744,7 +771,10 @@ void AudioDecoder::FallbackToSoftware(const std::string &why) {
                 HwStageName());
     hwStage_.store(5);
     if (hw_) {
-        BlacklistHwMime(hw_->mime());  // L2：该 mime 在运行期回退，本进程后续不再试硬解
+        if (!hwEosSent_) {
+            // 只有数据路径上的回退才拉黑；EOS 阶段的瞬时错误不算硬件不可用
+            BlacklistHwMime(hw_->mime());
+        }
         const bool nothingDecoded = hw_->outSamples() == 0;
         // 实例可能已经卡死：把 Flush/Stop/Destroy 丢到后台线程，解码线程立刻继续
         hw_->AbandonAsync();
@@ -892,7 +922,16 @@ int AudioDecoder::HwFillPending(int outRate, int outChannels) {
         hwStage_.store(0);
         if (r == AVERROR_EOF) {
             hwStage_.store(3);
-            const int er = hw_->SendEos(&why);
+            int er = -1;
+            // EOS 推送偶尔也会瞬时返回 INVALID_VAL，重试几次再决定怎么收尾
+            for (int attempt = 0; attempt < 10; ++attempt) {
+                why.clear();
+                er = hw_->SendEos(&why);
+                if (er >= 0) break;
+                if (why.find("INVALID_VAL") == std::string::npos) break;
+                if (stopRequested_.load()) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
             hwStage_.store(0);
             if (er == 1) {
                 if (++hwEosTry_ >= 100) {
@@ -906,6 +945,15 @@ int AudioDecoder::HwFillPending(int outRate, int outChannels) {
                 continue;  // 输入缓冲满，先拉输出，下一轮重试
             }
             if (er < 0) {
+                if (why.find("INVALID_VAL") != std::string::npos) {
+                    // EOS 被拒不是解码故障：跳过 EOS，继续把尾部输出拉干净
+                    OH_LOG_WARN(LOG_APP,
+                                "[decoder] EOS rejected (INVALID_VAL), drain without EOS");
+                    hwEosSent_ = true;
+                    hwEosIdle_ = 0;
+                    hwEosTry_ = 0;
+                    continue;
+                }
                 FallbackToSoftware(why);
                 return StreamFillPending(outRate, outChannels);
             }

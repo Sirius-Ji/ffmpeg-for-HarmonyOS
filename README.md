@@ -250,7 +250,7 @@ prebuilt/<abi>/
 | M0 | FFmpeg n9.0 交叉编译到 ohos，双 ABI，16 KB 页对齐，LGPL 配置 | ✅ |
 | M1 | NAPI 打通 open → read → decode（整文件解到 WAV，与桌面逐字节对拍） | ✅ 真机验证 |
 | M2 | 流式解码 + 环形缓冲 + `OH_AudioRenderer` 出声（Play/Stop） | ✅ 真机验证 |
-| M3 | `OH_AudioCodec` 同步模式做主力解码，FFmpeg 退为兜底 | ⏳ |
+| M3 | `OH_AudioCodec` 同步模式做主力解码，FFmpeg 退为兜底 | ✅ M3.0/M3.1 已合入（AAC/MP3/FLAC） |
 | M4 | 按 TPC 规范补齐 `HPKBUILD` / `README.OpenSource` / CI，提交 tpc_c_cplusplus | ⏳ |
 
 ---
@@ -277,6 +277,10 @@ LICENSES/       # 第三方许可证全文
 - **Opus 编码是 FFmpeg 原生实验性实现**：调用 `avcodec_open2` 前必须设
   `avctx->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL`，且只支持 48 kHz / 2ch。
   帧长对齐到 960（20 ms）；我们的转码器按 `enc->frame_size` 切片，不写死。
+- **Dolby Atmos（AC-4）m4a 不支持**：网易云「臻音全景声」这类文件，NCM 解密只去掉外层封装，
+  内层是 AC-4 / 专有 DRM 音轨；FFmpeg 主线**没有 AC-4 解码器**，mov 解封装器也无法识别其 sample entry。
+  打开会报 `unsupported audio codec: none (not compiled in)`（`codec_id=0`，可看 `tag=0x...` 日志确认封装）。
+  支持的 Dolby 格式只有 **AC-3 / E-AC3**（`ac3` / `eac3` 已编入）；需要播放请先用官方工具转成 AAC / E-AC3。
 - 视频只编了硬解封装（`h264_oh` / `hevc_oh`），**没有视频编码、也没有视频软解**。
 - **外部 URI / 云盘 I/O**：受限于系统的底层 I/O 机制，直接读取外部云盘或未下载完的虚拟文件 URI 时，
   若发生内核级阻塞，底层会在 **1.5 秒超时后 detach 该解码线程**（泄漏一个线程，App 不会 ANR）。
