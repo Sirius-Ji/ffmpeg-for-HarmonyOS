@@ -154,6 +154,8 @@ int TranscodeAudio(int srcFd, int dstFd, const std::string &format, std::string 
     if (!PickProfile(format, &prof)) return fail("unsupported format: " + format);
     OH_LOG_INFO(LOG_APP, "[transcode] format=%{public}s muxer=%{public}s bitrate=%{public}d",
                 prof.name, prof.muxer, prof.bitrate);
+    // 批量转码默认软解：不创建 OH_AudioCodec 实例（硬解实例有上限，瓶颈在编码器）
+    OH_LOG_INFO(LOG_APP, "[transcode] decode=software (batch default)");
 
     Ctx c;
     c.inFd = ::dup(srcFd);

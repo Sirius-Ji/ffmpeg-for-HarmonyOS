@@ -25,7 +25,7 @@ README = os.path.join(ROOT, "README.md")
 REQUIRED = {
     "decoder": [
         "h264_oh", "hevc_oh",
-        "aac", "ac3", "alac", "ape", "dca", "flac", "mp3", "mp3float",
+        "aac", "ac3", "eac3", "alac", "ape", "dca", "flac", "mp3", "mp3float",
         "opus", "pcm_s16le", "pcm_s24le", "pcm_s32le", "wmav2",
     ],
     "encoder": ["aac", "alac", "flac", "libmp3lame", "pcm_s16le", "pcm_s24le", "opus"],
@@ -130,9 +130,20 @@ def check_zip(abi, failures):
         if hdr not in names:
             failures.append(f"[{abi}] 包里缺头文件: {hdr}")
 
-    for meta in ("NOTICE.md", "LICENSES/LGPL-2.1.txt", "BUILD-INFO.txt"):
+    for meta in ("NOTICE.md", "LICENSES/LGPL-2.1.txt", "BUILD-INFO.txt",
+                 "lib/cmake/ffmpeg_ohos/ffmpeg-ohos-config.cmake",
+                 "lib/cmake/ffmpeg_ohos/ffmpeg_ohos-config.cmake"):
         if meta not in names:
             failures.append(f"[{abi}] 包里缺: {meta}")
+
+    try:
+        info = z.read("BUILD-INFO.txt").decode("utf-8", "replace")
+        if "eac3" not in info:
+            failures.append(f"[{abi}] BUILD-INFO 未列出 eac3")
+        if "config.cmake" not in info:
+            failures.append(f"[{abi}] BUILD-INFO 未提到 config.cmake")
+    except KeyError:
+        failures.append(f"[{abi}] 读不到 BUILD-INFO.txt")
 
     standalone = os.path.join(RELEASE_DIR, f"BUILD-INFO-{abi}.txt")
     if not os.path.exists(standalone):
@@ -161,6 +172,11 @@ def check_readme(failures, packages, libs_by_abi):
     for banned in BANNED_IN_README:
         if banned in text:
             failures.append(f"README 仍提到已不发布的库名: {banned}")
+
+    if "eac3" not in text:
+        failures.append("README 未提到新增的 eac3 解码器")
+    if "ffmpeg-ohos-config.cmake" not in text:
+        failures.append("README 未提到 ffmpeg-ohos-config.cmake")
 
     for pkg in packages:
         if pkg and pkg not in text:

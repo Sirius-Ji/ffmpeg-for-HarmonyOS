@@ -88,7 +88,7 @@ build_one() {
     --disable-everything \
     --enable-avformat --enable-avcodec --enable-avutil --enable-swresample \
     --enable-ohcodec \
-    --enable-decoder=h264_oh,hevc_oh,aac,ac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2 \
+    --enable-decoder=h264_oh,hevc_oh,aac,ac3,eac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2 \
     --enable-encoder=aac,alac,flac,pcm_s16le,pcm_s24le,libmp3lame,opus \
     --enable-parser=aac,ac3,dca,flac,mpegaudio,opus \
     --enable-demuxer=mov,matroska,ogg,flac,ape,dsf,wav,mp3,aac,tta,wv,caf,asf \

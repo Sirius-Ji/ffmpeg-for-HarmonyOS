@@ -17,6 +17,10 @@ bool HardwareDecodeEnabled();
 void MarkOhCodecFatal();
 bool OhCodecFatal();
 
+// P1：按 mime 的黑名单。某 mime 触发 L2 运行期回退后，本进程内不再尝试它的硬解。
+void BlacklistHwMime(const std::string &mime);
+bool IsHwBlacklisted(const std::string &mime);
+
 struct AudioInfo {
     std::string format;
     std::string codec;

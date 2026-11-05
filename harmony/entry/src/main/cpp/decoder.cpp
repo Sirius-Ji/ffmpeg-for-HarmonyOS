@@ -9,6 +9,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -24,6 +26,7 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavcodec/defs.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
@@ -37,12 +40,27 @@ extern "C" {
 namespace {
 std::atomic<bool> g_hardwareDecode{true};
 std::atomic<bool> g_ohcodecFatal{false};
+std::mutex g_hwBlacklistMtx;
+std::set<std::string> g_hwBlacklist;
 }
 
 void SetHardwareDecodeEnabled(bool on) { g_hardwareDecode.store(on); }
 bool HardwareDecodeEnabled() { return g_hardwareDecode.load(); }
 void MarkOhCodecFatal() { g_ohcodecFatal.store(true); }
 bool OhCodecFatal() { return g_ohcodecFatal.load(); }
+
+void BlacklistHwMime(const std::string &mime) {
+    if (mime.empty()) return;
+    std::lock_guard<std::mutex> lock(g_hwBlacklistMtx);
+    if (g_hwBlacklist.insert(mime).second) {
+        OH_LOG_WARN(LOG_APP, "[decoder] hw blacklist add mime=%{public}s", mime.c_str());
+    }
+}
+
+bool IsHwBlacklisted(const std::string &mime) {
+    std::lock_guard<std::mutex> lock(g_hwBlacklistMtx);
+    return g_hwBlacklist.count(mime) > 0;
+}
 
 const char *AudioDecoder::HwStageName() const {
     switch (hwStage_.load()) {
@@ -267,6 +285,10 @@ int AudioDecoder::FinishOpen(AudioInfo *info) {
             case AV_CODEC_ID_MP3: hwMime = OH_AVCODEC_MIMETYPE_AUDIO_MPEG; break;
             case AV_CODEC_ID_FLAC: hwMime = OH_AVCODEC_MIMETYPE_AUDIO_FLAC; break;
             default: break;
+        }
+        if (hwMime != nullptr && IsHwBlacklisted(hwMime)) {
+            routeWhy_ = "hw blacklist";
+            hwMime = nullptr;  // 本进程内该 mime 已确认不稳定，直接软解
         }
         if (hwMime != nullptr) {
             const AVCodecParameters *par = st->codecpar;
@@ -602,6 +624,20 @@ int AudioDecoder::ReadPcm(std::vector<uint8_t> &out, int maxFrames, int outRate,
 
 // ---------------- M3.1：AAC 硬解后端 ----------------
 
+namespace {
+// FFmpeg profile -> AAC AOT（音频对象类型）；ADTS 的 2-bit profile = AOT-1
+int AacAotFromAvProfile(int profile) {
+    switch (profile) {
+        case AV_PROFILE_AAC_MAIN: return 1;
+        case AV_PROFILE_AAC_SSR: return 3;
+        case AV_PROFILE_AAC_LTP: return 4;
+        case AV_PROFILE_AAC_HE: return 5;
+        case AV_PROFILE_AAC_HE_V2: return 29;
+        default: return 2;  // AAC-LC
+    }
+}
+}  // namespace
+
 void AudioDecoder::BuildElementary(void *pktPtr) {
     AVPacket *pkt = (AVPacket *)pktPtr;
     adts_.clear();
@@ -633,7 +669,10 @@ void AudioDecoder::BuildElementary(void *pktPtr) {
             break;
         }
     }
-    const int profile = par->profile >= 0 ? par->profile : 1;  // AAC-LC = 1
+    const int aot = AacAotFromAvProfile(par->profile >= 0 ? par->profile : AV_PROFILE_AAC_LOW);
+    // HE-AAC / HEv2 的 SBR/PS 是隐式扩展，ADTS 头只能声明核心 LC（AOT 2），
+    // 否则 AOT 5/29 放不进 2 bit 的 profile 字段，会出现“创建成功但无输出”。
+    const int adtsProfile = (aot == 5 || aot == 29) ? 1 : ((aot - 1) & 0x3);
     const int channels = par->ch_layout.nb_channels > 0 ? par->ch_layout.nb_channels : hwCh_;
     const int frameLen = 7 + pkt->size;
 
@@ -641,7 +680,7 @@ void AudioDecoder::BuildElementary(void *pktPtr) {
     uint8_t *a = adts_.data();
     a[0] = 0xFF;
     a[1] = 0xF1;  // MPEG-4, layer 0, 无 CRC
-    a[2] = (uint8_t)((profile << 6) | (rateIdx << 2) | (channels >> 2));
+    a[2] = (uint8_t)((adtsProfile << 6) | (rateIdx << 2) | (channels >> 2));
     a[3] = (uint8_t)(((channels & 3) << 6) | ((frameLen >> 11) & 0x3));
     a[4] = (uint8_t)((frameLen >> 3) & 0xFF);
     a[5] = (uint8_t)(((frameLen & 7) << 5) | 0x1F);
@@ -705,6 +744,7 @@ void AudioDecoder::FallbackToSoftware(const std::string &why) {
                 HwStageName());
     hwStage_.store(5);
     if (hw_) {
+        BlacklistHwMime(hw_->mime());  // L2：该 mime 在运行期回退，本进程后续不再试硬解
         const bool nothingDecoded = hw_->outSamples() == 0;
         // 实例可能已经卡死：把 Flush/Stop/Destroy 丢到后台线程，解码线程立刻继续
         hw_->AbandonAsync();

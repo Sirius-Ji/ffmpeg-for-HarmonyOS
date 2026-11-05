@@ -1,13 +1,23 @@
 # ffmpeg-for-HarmonyOS
 
-> **v0.1.1 Alpha · 早期测试版**
+> **v0.1.3 Alpha · 早期测试版**
 >
 > 解码 / 播放链路已真机验证（192 kHz/2ch FLAC 无卡顿、无爆音），**v0.1.1 起加入基础转码能力**
 > （音频编码 `aac/alac/flac/mp3(libmp3lame)/opus/pcm_s16le/pcm_s24le`，
 > 封装 `mp4/mov/ipod/mp3/flac/wav/matroska/adts/ogg/opus`）。
+> **v0.1.3 起 M3.0/M3.1 硬解已合入**，并随 Release 提供 CMake Config。
 > **API 仍可能变更**，欢迎试用、集成、提 Issue 和 PR。
 
-## 🚀 v0.1.1 更新亮点
+## 🚀 v0.1.3 更新亮点
+
+- **新增 E-AC3 解码**：`eac3` 原生解码器编入白名单，解决部分全景声 M4A（E-AC3 音轨）无法解码的问题。
+- **CMake Config 随包发布**：Release 包内含 `ffmpeg-ohos-config.cmake`，`find_package(ffmpeg_ohos REQUIRED)`
+  自动带入头文件、5 个 `.so`、LAME 依赖和 `-rpath-link`。
+- **硬解稳定性**：新增进程内按 mime 的硬件黑名单（某 mime 触发 L2 回退后本进程不再重试）；
+  ADTS profile 改为查表映射，修正 HE-AAC / HEv2 的“创建成功但无输出”。
+- **文档口径修正**：`libmp3lame.so.0` 明确为**强制运行时依赖**；批量转码默认走软解。
+
+## 🚀 v0.1.1 更新亮点（历史）
 
 - **全新转码能力**：打通底层转码链路，支持输出 **AAC**、**MP3** 和 **Opus** 三种主流音频格式。
 - **引入 LAME 引擎**：为了解决 FFmpeg 无原生 MP3 编码器的问题，已成功交叉编译并集成 `libmp3lame.so.0`。
@@ -21,7 +31,7 @@
 - 产物：带 SONAME 的动态库 + 完整头文件，**5 个 `.so`**（4 个 FFmpeg + `libmp3lame`），
   CMake 集成成本 `64 KB` 级别（4 个 IMPORTED 目标 + `libmp3lame` 作为运行时依赖）
 - 许可：**LGPL-2.1-or-later**（未启用 GPL / nonfree），见 [NOTICE.md](NOTICE.md)
-- 状态：M0 交叉编译 ✅、M1 真机解码 ✅、M2 播放链路真机验证 ✅、**v0.1.1 转码能力已编入**（音频编码 / 封装）、M3 平台硬解路由 ⏳
+- 状态：M0 交叉编译 ✅、M1 真机解码 ✅、M2 播放链路真机验证 ✅、v0.1.1 转码能力 ✅、**M3.0/M3.1 平台硬解已合入** ✅
 
 > 仓库里的 `harmony/` 只是**验证载体**（一个只有 Play/Stop 的空白页），不是产品。库的价值在 `prebuilt/` 的产物和 `build/` 的构建脚本。
 
@@ -32,13 +42,13 @@
 | 能力 | 状态 | 说明 |
 | --- | --- | --- |
 | 容器解封装 | ✅ | `mov/mp4/m4a`、`matroska`、`ogg`、`flac`、`ape`、`dsf`、`wav`、`mp3`、`aac(ADTS)`、`tta`、`wv`、`caf`、`asf` |
-| 音频软解 | ✅ | `aac` `alac` `ape` `ac3` `dca(DTS)` `flac` `mp3` `opus` `pcm_s16le` `wmav2`，统一输出 S16 交错 |
+| 音频软解 | ✅ | `aac` `alac` `ape` `ac3` `eac3` `dca(DTS)` `flac` `mp3` `opus` `pcm_s16le` `wmav2`，统一输出 S16 交错 |
 | 音频编码 | ✅ | `aac` / `alac` / `flac` / `mp3`（libmp3lame）/ `opus` / `pcm_s16le` / `pcm_s24le` |
 | 容器封装 | ✅ | `mp4` / `mov` / `ipod`（M4A 兼容性最好） / `mp3` / `flac` / `wav` / `matroska` / `adts` / `ogg` / `opus` |
 | 重采样 / 声道归一 | ✅ | `libswresample`，任意输入 → 指定采样率/声道（默认 48 kHz / 2ch） |
 | 音频播放输出 | ✅ | `OHAudio`（数据写入回调）；demo 支持系统文件选择器选歌、fd 直读、48 kHz / 2ch / S16 输出，含解码耗时 / CPU / RSS 日志 |
 | 视频硬解封装 | ✅（编译进） | `h264_oh` / `hevc_oh`，走 `--enable-ohcodec`；需要调用方提供 surface，demo 未接 |
-| 音频硬解（平台解码器） | ⏳ M3 | `OH_AudioCodec` 同步模式路由（API 20+） |
+| 音频硬解（平台解码器） | ✅ M3.0/M3.1 | `OH_AudioCodec` 同步模式：AAC / MP3 / FLAC；L0 能力过滤 + L1/L2 回退 + 熔断/黑名单 |
 | 视频软解 / 视频编码 | ❌ | 未编入；本库是**音频**基座，不碰视频编解码 |
 | 网络协议 / HLS / DASH | ❌ | `--disable-network`，只留 `file` 协议 |
 | 字幕 / 加密 / DRM | ❌ | 未编入 |
@@ -59,7 +69,20 @@
 | `ffmpeg-n9.0-ohos-arm64-v8a.zip` | `third_party/ffmpeg-ohos/arm64-v8a/` |
 | `ffmpeg-n9.0-ohos-x86_64.zip` | `third_party/ffmpeg-ohos/x86_64/` |
 
-解压后每个目录里是 `include/` 和 `lib/`（**5 个带 SONAME 的 `.so`**：4 个 FFmpeg + `libmp3lame`）：
+解压后每个目录里是 `include/` 和 `lib/`（**5 个带 SONAME 的 `.so`**：4 个 FFmpeg + `libmp3lame`），
+以及 `lib/cmake/ffmpeg_ohos/ffmpeg-ohos-config.cmake`。
+
+**方式 A（v0.1.3+ 推荐）**：直接用随包发布的 CMake Config：
+
+```cmake
+list(APPEND CMAKE_PREFIX_PATH ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg-ohos/${OHOS_ARCH})
+find_package(ffmpeg_ohos REQUIRED)
+target_link_libraries(entry PRIVATE ffmpeg_ohos::ffmpeg)
+```
+
+include 路径、5 个 `.so`（含 `libmp3lame.so.0`）和 `-rpath-link` 都由 config 自动处理。
+
+**方式 B（手动）**：
 
 ```cmake
 set(FF_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg-ohos/${OHOS_ARCH})
@@ -98,7 +121,7 @@ entry/libs/arm64-v8a/libavcodec.so.63
 entry/libs/arm64-v8a/libavformat.so.63
 entry/libs/arm64-v8a/libavutil.so.61
 entry/libs/arm64-v8a/libswresample.so.7
-entry/libs/arm64-v8a/libmp3lame.so.0      # MP3 编码的运行时依赖（不开 MP3 编码可不带）
+entry/libs/arm64-v8a/libmp3lame.so.0      # 强制依赖：缺了它整个 NAPI 模块都起不来
 ```
 
 > ⚠️ **`libmp3lame.so.0` 是硬依赖，不是可选项。**
@@ -122,7 +145,10 @@ C++ 侧的参考实现（解封装 → 软解 → 重采样 → OHAudio 播放�
 [`audio_player.cpp`](harmony/entry/src/main/cpp/audio_player.cpp)，可以直接抄。
 
 转码侧在 [`transcoder.cpp`](harmony/entry/src/main/cpp/transcoder.cpp)：解封装 → 软解 →
-重采样到 48 kHz/2ch → **AAC 编码** → **mp4（m4a）封装**，全程走 fd，不落临时文件：
+重采样到 48 kHz/2ch → **AAC 编码** → **mp4（m4a）封装**，全程走 fd，不落临时文件。
+
+> **批量转码默认走软解**：NAPI 转码接口不会创建 `OH_AudioCodec` 实例。
+> 系统硬解实例有上限，且转码瓶颈在编码，硬解只会增加不稳定性；需要硬解请在播放链路使用。
 
 ```ts
 const inFile = fs.openSync(src, fs.OpenMode.READ_ONLY);

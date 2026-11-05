@@ -30,7 +30,7 @@ LIB_NAMES = ["avcodec", "avformat", "avutil", "swresample", "mp3lame"]
 LIB_RE = re.compile(r"^lib(%s)\.so\.(\d+)$" % "|".join(LIB_NAMES))
 
 COMPONENTS = {
-    "decoders": "aac ac3 alac ape dca flac mp3 mp3float opus pcm_s16le pcm_s24le pcm_s32le wmav2 h264_oh hevc_oh",
+    "decoders": "aac ac3 eac3 alac ape dca flac mp3 mp3float opus pcm_s16le pcm_s24le pcm_s32le wmav2 h264_oh hevc_oh",
     "encoders": "aac alac flac libmp3lame opus pcm_s16le pcm_s24le",
     "muxers": "mp4 mov ipod mp3 flac wav matroska adts ogg opus",
     "parsers": "aac ac3 dca flac mpegaudio opus",
@@ -62,10 +62,14 @@ def build_info(abi, lib_files):
         lines.append(f"  lib/{name}  sha256={sha256(path)}  size={os.path.getsize(path)}")
     lines += [
         "",
+        "release notes:",
+        "  * 本次 prebuilt 包含新增的 eac3 解码器，并提供了 config.cmake，修正了文档口径。",
+        "",
         "notes:",
         "  * 链接时请使用带大版本号的文件名（SONAME 一致），不要改名成 libxxx.so",
         "  * 运行时把同名 .so 放到 HAP 的 libs/<abi>/ 目录",
         "  * 页对齐 16KB（PT_LOAD align = 0x4000）",
+        "  * CMake：list(APPEND CMAKE_PREFIX_PATH <解压目录>) 后 find_package(ffmpeg_ohos REQUIRED)",
         "  * 许可证全文见 LICENSES/LGPL-2.1.txt，声明见 NOTICE.md",
     ]
     return "\n".join(lines) + "\n"
@@ -108,6 +112,10 @@ def main():
             z.write(os.path.join(ROOT, "NOTICE.md"), "NOTICE.md")
             z.write(os.path.join(ROOT, "LICENSES", "LGPL-2.1.txt"),
                     os.path.join("LICENSES", "LGPL-2.1.txt"))
+            z.write(os.path.join(ROOT, "build", "ffmpeg-ohos-config.cmake"),
+                    "lib/cmake/ffmpeg_ohos/ffmpeg-ohos-config.cmake")
+            z.write(os.path.join(ROOT, "build", "ffmpeg_ohos-config.cmake"),
+                    "lib/cmake/ffmpeg_ohos/ffmpeg_ohos-config.cmake")
             z.writestr("BUILD-INFO.txt", build_info(abi, lib_files))
 
         made.append((out, os.path.getsize(out)))

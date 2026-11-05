@@ -2,6 +2,21 @@
 
 所有值得注意的变更都记在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## v0.1.3（2026-11-05）
+
+### 新增
+
+- 编入 **E-AC3 解码器**（`eac3`，FFmpeg 原生实现），修复部分全景声 M4A（E-AC3 音轨）无法解码。
+- Release 包新增 **`ffmpeg-ohos-config.cmake`**：`find_package(ffmpeg_ohos REQUIRED)` 自动带入
+  头文件、5 个 `.so`、LAME 依赖和 `-rpath-link`。
+- 进程内 **硬件黑名单**：某 mime 触发 L2 运行期回退后，本进程后续直接走软解，避免反复重试。
+
+### 变更
+
+- **AAC ADTS profile 改为查表映射**（LC/HE/HEv2），修正 HE-AAC 硬解“创建成功但无输出”。
+- **批量转码默认软解**：NAPI 转码接口明确不创建 `OH_AudioCodec` 实例，转码瓶颈在编码器。
+- 文档口径修正：`libmp3lame.so.0` 明确为**强制运行时依赖**；M3 状态改为 M3.0/M3.1 已合入。
+
 ## v0.1.2（2026-11-05）
 
 ### 新增
