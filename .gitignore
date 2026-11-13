@@ -63,3 +63,7 @@ Thumbs.db
 # Python »º´æ
 __pycache__/
 *.pyc
+
+# Local signing config (DevEco writes absolute paths + encrypted passwords)
+harmony/build-profile.json5
+!harmony/build-profile.json5.example

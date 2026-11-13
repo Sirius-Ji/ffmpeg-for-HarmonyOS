@@ -10,6 +10,6 @@ if git grep --cached -n -I -E "$pattern" -- . ':(exclude).githooks' >/tmp/pre-co
     echo "✖ 检测到签名信息或本机路径，已阻止提交：" >&2
     cat /tmp/pre-commit-secrets.txt >&2
     echo "" >&2
-    echo "提示：harmony/build-profile.json5 里的 signingConfigs 应保持 []。" >&2
+    echo "提示：build-profile.json5 已加入 .gitignore；若出现签名串，请检查 example 或其它文件。" >&2
     exit 1
 fi
