@@ -233,6 +233,8 @@ I FFM1 : [player] perf decode_avg=0.003ms/frame calls=312 cpu=18% rss=48213KB ri
 
 前置：Windows + DevEco Studio（自带 NDK/clang/CMake）+ MSYS2（`make`、`bash`）。
 
+> 首次克隆项目后，请复制 `harmony/build-profile.json5.example` 为 `harmony/build-profile.json5`，并在 DevEco 中配置你自己的签名。
+
 ```bash
 # 1) 拉 FFmpeg 源码（n9.0）
 git -c http.sslBackend=openssl clone --depth 1 --branch n9.0 \
