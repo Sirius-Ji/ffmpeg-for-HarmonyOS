@@ -1,7 +1,8 @@
+// 模板文件：首次克隆项目后，复制为 harmony/build-profile.json5，
+// 再在 DevEco Studio 的 Project Structure → Signing Configs 里配置你自己的签名。
+// build-profile.json5 已被 .gitignore 忽略，本机的证书路径和口令不会进 git。
 {
   "app": {
-    // 签名配置故意留空：本机在 DevEco 里自动签名后，IDE 会把证书绝对路径
-    // 和加密后的密码写进这个文件，提交前务必清回 []。
     "signingConfigs": [],
     "products": [
       {

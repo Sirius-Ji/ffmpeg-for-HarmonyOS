@@ -44,11 +44,16 @@ def release_tag():
     env = os.environ.get("RELEASE_TAG")
     if env:
         return env.strip()
+    # 只认严格 vX.Y.Z 发布标签；忽略 v0.1.5-fix 这类本地后缀标签
     try:
-        return subprocess.check_output(["git", "describe", "--tags", "--abbrev=0"],
-                                       cwd=ROOT, text=True, stderr=subprocess.DEVNULL).strip()
+        out = subprocess.check_output(["git", "tag", "--list", "v*"],
+                                      cwd=ROOT, text=True, stderr=subprocess.DEVNULL)
     except Exception:  # noqa: BLE001
         return "dev"
+    tags = [t.strip() for t in out.splitlines() if re.fullmatch(r"v\d+\.\d+\.\d+", t.strip())]
+    if not tags:
+        return "dev"
+    return max(tags, key=lambda t: tuple(int(x) for x in t[1:].split(".")))
 
 
 TAG = release_tag()
