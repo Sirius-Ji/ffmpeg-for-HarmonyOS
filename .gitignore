@@ -86,3 +86,6 @@ build/freetype-arm64/
 build/freetype-toolchain/
 build/pkg-config
 
+
+third_party/zlib-*
+

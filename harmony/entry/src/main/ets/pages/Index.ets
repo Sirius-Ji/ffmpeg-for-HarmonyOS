@@ -606,12 +606,16 @@ struct Index {
       const ctx = getContext(this) as common.UIAbilityContext;
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
+      const logo = await this.ensureSample('logo.png');
+      const pr = native.imageProbe(logo);
+      this.status = `LOGO ${pr.data}`;
       const dst = `${ctx.filesDir}/watermark.mp4`;
       this.status = 'M4.5 水印转码中…';
       native.videoTranscode(src, dst,
         `watermark|${this.wmText}|${this.wmPosition}|${this.wmSize}|${this.wmColor}|${font}|${this.wmAlpha}|${this.wmBold ? 1 : 0}`,
         this.resolution,
-        this.convertVolume);
+        this.convertVolume,
+        logo);
       for (let i = 0; i < 240; i++) {
         await new Promise<void>((resolve) => setTimeout(resolve, 500));
         const s = JSON.parse(native.videoTranscodeStatus().data) as Record<string, number>;

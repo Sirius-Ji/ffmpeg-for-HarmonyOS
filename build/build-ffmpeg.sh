@@ -118,12 +118,13 @@ build_one() {
     --enable-avformat --enable-avcodec --enable-avutil --enable-swresample --enable-avfilter --enable-swscale \
     --enable-libfreetype --enable-libharfbuzz --enable-filter=drawtext,scale,overlay,format \
     --enable-ohcodec \
-    --enable-decoder=h264_oh,hevc_oh,h264,hevc,aac,ac3,eac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2 \
+    --enable-decoder=h264_oh,hevc_oh,h264,hevc,aac,ac3,eac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2,png,mjpeg \
     --enable-encoder=aac,alac,flac,pcm_s16le,pcm_s24le,libmp3lame,opus,h264_oh,hevc_oh \
     --enable-parser=aac,ac3,dca,flac,h264,hevc,mpegaudio,opus \
-    --enable-demuxer=mov,matroska,ogg,flac,ape,dsf,wav,mp3,aac,tta,wv,caf,asf,mpegts,flv \
+    --enable-demuxer=mov,matroska,ogg,flac,ape,dsf,wav,mp3,aac,tta,wv,caf,asf,mpegts,flv,image2 \
     --enable-muxer=mp4,mov,ipod,mp3,flac,wav,matroska,adts,ogg,opus,mpegts,flv \
     --enable-libmp3lame \
+    --enable-zlib \
     --enable-bsf=aac_adtstoasc,extract_extradata,h264_mp4toannexb \
     --enable-protocol=file \
     $extra \

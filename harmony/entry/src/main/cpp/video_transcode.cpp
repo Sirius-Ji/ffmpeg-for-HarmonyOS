@@ -24,6 +24,7 @@ extern "C" {
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
 #include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
 }
 
 #undef LOG_DOMAIN
@@ -39,6 +40,51 @@ static std::string EscapeText(const std::string &in) {
         out.push_back(c);
     }
     return out;
+}
+static AVFrame *LoadImageToFrame(const std::string &path, std::string *err) {
+    AVFormatContext *fmt = nullptr;
+    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0) {
+        *err = "open failed"; return nullptr;
+    }
+    avformat_find_stream_info(fmt, nullptr);
+    int idx = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (idx < 0) { avformat_close_input(&fmt); *err = "no video stream"; return nullptr; }
+    AVCodecParameters *par = fmt->streams[idx]->codecpar;
+    const AVCodec *dec = avcodec_find_decoder(par->codec_id);
+    AVCodecContext *ctx = dec ? avcodec_alloc_context3(dec) : nullptr;
+    int pr = ctx ? avcodec_parameters_to_context(ctx, par) : -1;
+    int cr = (ctx && pr >= 0) ? avcodec_open2(ctx, dec, nullptr) : -1;
+    if (!ctx || pr < 0 || cr < 0) {
+        char eb[128] = {0}; av_strerror(cr, eb, sizeof(eb));
+        OH_LOG_ERROR(LOG_APP, "[overlay] codec=%{public}d dec=%{public}p pr=%{public}d cr=%{public}d err=%{public}s",
+                     par->codec_id, dec, pr, cr, eb);
+        avcodec_free_context(&ctx); avformat_close_input(&fmt); *err = "decoder open failed"; return nullptr;
+    }
+    AVPacket *pkt = av_packet_alloc();
+    AVFrame *pic = av_frame_alloc();
+    AVFrame *rgba = nullptr;
+    while (av_read_frame(fmt, pkt) >= 0) {
+        if (pkt->stream_index == idx && avcodec_send_packet(ctx, pkt) == 0 &&
+            avcodec_receive_frame(ctx, pic) == 0) {
+            rgba = av_frame_alloc();
+            rgba->format = AV_PIX_FMT_RGBA; rgba->width = pic->width; rgba->height = pic->height;
+            if (av_frame_get_buffer(rgba, 32) < 0) { av_frame_free(&rgba); }
+            else {
+                SwsContext *sws = sws_getContext(pic->width, pic->height, (AVPixelFormat)pic->format,
+                                                 pic->width, pic->height, AV_PIX_FMT_RGBA,
+                                                 SWS_BILINEAR, nullptr, nullptr, nullptr);
+                if (sws) { sws_scale(sws, pic->data, pic->linesize, 0, pic->height, rgba->data, rgba->linesize); sws_freeContext(sws); }
+                else { av_frame_free(&rgba); }
+            }
+            av_packet_unref(pkt); break;
+        }
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt); av_frame_free(&pic); avcodec_free_context(&ctx); avformat_close_input(&fmt);
+    if (rgba) OH_LOG_INFO(LOG_APP, "[overlay] logo loaded w=%{public}d h=%{public}d fmt=%{public}d",
+                          rgba->width, rgba->height, rgba->format);
+    else *err = "decode failed";
+    return rgba;
 }
 class WatermarkFilter {
 public:
@@ -123,6 +169,52 @@ public:
 private:
     AVFilterGraph *graph_ = nullptr;
     AVFilterContext *src_ = nullptr, *sink_ = nullptr, *scale_ = nullptr, *draw_ = nullptr, *fmt_ = nullptr;
+    bool ready_ = false;
+};
+class ImageOverlayFilter {
+public:
+    ~ImageOverlayFilter() { if (graph_) avfilter_graph_free(&graph_); }
+    bool Init(int inW, int inH, int outW, int outH, int logoW, int logoH,
+              const std::string &fontPath, const std::string &text) {
+        graph_ = avfilter_graph_alloc();
+        if (!graph_) return false;
+        char mainArgs[128], logoArgs[128];
+        snprintf(mainArgs, sizeof(mainArgs), "video_size=%dx%d:pix_fmt=nv12:time_base=1/24:pixel_aspect=1/1", inW, inH);
+        snprintf(logoArgs, sizeof(logoArgs), "video_size=%dx%d:pix_fmt=rgba:time_base=1/24:pixel_aspect=1/1", logoW, logoH);
+        if (avfilter_graph_create_filter(&main_, avfilter_get_by_name("buffer"), "main", mainArgs, nullptr, graph_) < 0) return false;
+        if (avfilter_graph_create_filter(&logo_, avfilter_get_by_name("buffer"), "logo", logoArgs, nullptr, graph_) < 0) return false;
+        if (avfilter_graph_create_filter(&overlay_, avfilter_get_by_name("overlay"), "ov", "x=W-w-20:y=H-h-20", nullptr, graph_) < 0) return false;
+        if (avfilter_graph_create_filter(&fmt_, avfilter_get_by_name("format"), "fmt", "pix_fmts=nv12", nullptr, graph_) < 0) return false;
+        char sc[64];
+        snprintf(sc, sizeof(sc), "w=%d:h=%d", outW, outH);
+        if (avfilter_graph_create_filter(&scale_, avfilter_get_by_name("scale"), "scale", sc, nullptr, graph_) < 0) return false;
+        char dt[512];
+        snprintf(dt, sizeof(dt), "fontfile=%s:text='%s':x=20:y=20:fontsize=48:fontcolor=white",
+                 fontPath.c_str(), EscapeText(text).c_str());
+        if (avfilter_graph_create_filter(&draw_, avfilter_get_by_name("drawtext"), "draw", dt, nullptr, graph_) < 0) return false;
+        if (avfilter_graph_create_filter(&sink_, avfilter_get_by_name("buffersink"), "out", nullptr, nullptr, graph_) < 0) return false;
+        if (avfilter_link(main_, 0, overlay_, 0) < 0 || avfilter_link(logo_, 0, overlay_, 1) < 0 ||
+            avfilter_link(overlay_, 0, scale_, 0) < 0 || avfilter_link(scale_, 0, draw_, 0) < 0 ||
+            avfilter_link(draw_, 0, fmt_, 0) < 0 || avfilter_link(fmt_, 0, sink_, 0) < 0) return false;
+        if (avfilter_graph_config(graph_, nullptr) < 0) return false;
+        ready_ = true; return true;
+    }
+    int SendLogo(AVFrame *f) {
+        int r = av_buffersrc_add_frame_flags(logo_, f, AV_BUFFERSRC_FLAG_KEEP_REF);
+        if (r < 0) return r;
+        return av_buffersrc_add_frame_flags(logo_, nullptr, 0);
+    }
+    int Run(AVFrame *in, AVFrame *out) {
+        if (!ready_) return -1;
+        int r = av_buffersrc_add_frame_flags(main_, in, AV_BUFFERSRC_FLAG_KEEP_REF);
+        if (r < 0) return r;
+        return av_buffersink_get_frame(sink_, out);
+    }
+    int SendEOS() { return av_buffersrc_add_frame_flags(main_, nullptr, 0); }
+    int Receive(AVFrame *out) { return av_buffersink_get_frame(sink_, out); }
+private:
+    AVFilterGraph *graph_ = nullptr;
+    AVFilterContext *main_ = nullptr, *logo_ = nullptr, *overlay_ = nullptr, *scale_ = nullptr, *draw_ = nullptr, *fmt_ = nullptr, *sink_ = nullptr;
     bool ready_ = false;
 };
 struct OutPkt {
@@ -289,9 +381,18 @@ std::string VideoTranscodeStatusJson() {
     return gStatusJson;
 }
 
+int ImageProbe(const std::string &path, std::string *result) {
+    std::string err;
+    AVFrame *f = LoadImageToFrame(path, &err);
+    if (!f) { *result = err; return -1; }
+    *result = "{\"w\":" + std::to_string(f->width) + ",\"h\":" + std::to_string(f->height) + "}";
+    av_frame_free(&f);
+    return 0;
+}
+
 int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                    const std::string &format, const std::string &resolution,
-                   float volume, std::string *result) {
+                   float volume, const std::string &imagePath, std::string *result) {
     SetStatus(1, "{\"state\":1}");
     OH_LOG_INFO(LOG_APP, "[M4.6_BUILD_VER] Native Res=%{public}s scale_enabled=1", resolution.c_str());
     const bool watermark = format.rfind("watermark|", 0) == 0;
@@ -516,10 +617,23 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                 pkt = av_packet_alloc();
                 const AVRational outTb = AVRational{srcRate.den, srcRate.num};
                 WatermarkFilter wm;
-                const bool wmOk = watermark && wm.Init(wmText, wmPosition, wmFontSize, wmColor, fontPath, wmAlpha, wmBold, inW, inH, outW, outH);
-                if (watermark)
-                    OH_LOG_INFO(LOG_APP, "[vtrans] watermark=%{public}d font=%{public}s",
-                                wmOk ? 1 : 0, fontPath.c_str());
+                ImageOverlayFilter img;
+                bool useImg = false;
+                if (!imagePath.empty()) {
+                    std::string imgErr;
+                    AVFrame *logoFrame = LoadImageToFrame(imagePath, &imgErr);
+                    if (logoFrame && img.Init(inW, inH, outW, outH, logoFrame->width, logoFrame->height, fontPath, wmText) &&
+                        img.SendLogo(logoFrame) >= 0) {
+                        useImg = true;
+                    } else {
+                        OH_LOG_ERROR(LOG_APP, "[overlay] init failed: %{public}s", imgErr.c_str());
+                    }
+                    if (logoFrame) av_frame_free(&logoFrame);
+                }
+                bool wmOk = useImg || (watermark &&
+                    wm.Init(wmText, wmPosition, wmFontSize, wmColor, fontPath, wmAlpha, wmBold, inW, inH, outW, outH));
+                OH_LOG_INFO(LOG_APP, "[vtrans] image=%{public}d text=%{public}d useImg=%{public}d",
+                            imagePath.empty() ? 0 : 1, watermark ? 1 : 0, useImg ? 1 : 0);
                 if (watermark && !wmOk) {
                     failed = 20;
                     SetStatus(3, "{\"state\":3,\"code\":\"E_FILTER_INIT_FAILED\"}");
@@ -535,7 +649,7 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                             AVFrame *sendFrame = nv;
                             if (wmOk) {
                                 filtered = av_frame_alloc();
-                                if (filtered && wm.Run(nv, filtered) == 0) {
+                                if (filtered && (useImg ? img.Run(nv, filtered) : wm.Run(nv, filtered)) == 0) {
                                     filtered->pts = nv->pts;
                                     sendFrame = filtered;
                                 } else {
@@ -572,12 +686,12 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                     av_packet_unref(pkt);
                 }
                 if (wmOk) {
-                    int eosRet = wm.SendEOS();
+                    int eosRet = useImg ? img.SendEOS() : wm.SendEOS();
                     OH_LOG_INFO(LOG_APP, "[wm] EOS sent ret=%{public}d", eosRet);
                     int drained = 0;
                     while (true) {
                         AVFrame *of = av_frame_alloc();
-                        int r = wm.Receive(of);
+                        int r = useImg ? img.Receive(of) : wm.Receive(of);
                         if (r < 0) {
                             OH_LOG_INFO(LOG_APP, "[wm] drain end r=%{public}d frames=%{public}d", r, drained);
                             av_frame_free(&of);
