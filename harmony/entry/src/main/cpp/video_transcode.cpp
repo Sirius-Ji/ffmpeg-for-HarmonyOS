@@ -66,88 +66,6 @@ void ScaleToNv12(const AVFrame *src, AVFrame *dst) {
         }
     }
 }
-static bool IsStart3(const uint8_t *d, int n, int i) {
-    return i + 3 <= n && d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1;
-}
-static bool IsStart4(const uint8_t *d, int n, int i) {
-    return i + 4 <= n && d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 0 && d[i + 3] == 1;
-}
-static int NextStart(const uint8_t *d, int n, int from) {
-    for (int i = from; i + 3 <= n; ++i)
-        if (IsStart3(d, n, i) || IsStart4(d, n, i)) return i;
-    return n;
-}
-static bool ParseAnnexBParams(const uint8_t *d, int n, std::vector<uint8_t> &sps,
-                              std::vector<uint8_t> &pps) {
-    int i = 0;
-    while (i + 3 <= n) {
-        int sc = NextStart(d, n, i);
-        if (sc >= n) break;
-        const int sl = IsStart4(d, n, sc) ? 4 : 3;
-        const int ns = sc + sl;
-        const int ne = NextStart(d, n, ns);
-        if (ne <= ns) break;
-        if ((d[ns] & 0x1f) == 7) sps.assign(d + ns, d + ne);
-        else if ((d[ns] & 0x1f) == 8) pps.assign(d + ns, d + ne);
-        i = ne;
-    }
-    return !sps.empty() && !pps.empty();
-}
-static bool AnnexBToAvcc(AVPacket *&pkt, std::vector<uint8_t> &sps, std::vector<uint8_t> &pps) {
-    const uint8_t *d = pkt->data;
-    const int n = pkt->size;
-    std::vector<uint8_t> out;
-    int i = 0;
-    while (i + 3 <= n) {
-        int sc = NextStart(d, n, i);
-        if (sc >= n) break;
-        const int sl = IsStart4(d, n, sc) ? 4 : 3;
-        const int ns = sc + sl;
-        const int ne = NextStart(d, n, ns);
-        if (ne <= ns) break;
-        const int type = d[ns] & 0x1f;
-        if (type == 7 && sps.empty()) sps.assign(d + ns, d + ne);
-        else if (type == 8 && pps.empty()) pps.assign(d + ns, d + ne);
-        // 参数集不再剥离：以 4 字节长度内联进样本，尾部/IDR 不会缺 SPS/PPS
-        const uint32_t len = (uint32_t)(ne - ns);
-        out.push_back((uint8_t)(len >> 24));
-        out.push_back((uint8_t)(len >> 16));
-        out.push_back((uint8_t)(len >> 8));
-        out.push_back((uint8_t)len);
-        out.insert(out.end(), d + ns, d + ne);
-        i = ne;
-    }
-    if (out.empty()) return false;
-    AVPacket *np = av_packet_alloc();
-    av_new_packet(np, (int)out.size());
-    memcpy(np->data, out.data(), out.size());
-    np->pts = pkt->pts;
-    np->dts = pkt->dts;
-    np->flags = pkt->flags;
-    av_packet_free(&pkt);
-    pkt = np;
-    return true;
-}
-static std::vector<uint8_t> BuildAvcC(const std::vector<uint8_t> &sps,
-                                      const std::vector<uint8_t> &pps) {
-    std::vector<uint8_t> ed;
-    if (sps.size() < 4 || pps.empty()) return ed;
-    ed.push_back(1);
-    ed.push_back(sps[1]);
-    ed.push_back(sps[2]);
-    ed.push_back(sps[3]);
-    ed.push_back(0xFF);
-    ed.push_back(0xE1);
-    ed.push_back((uint8_t)(sps.size() >> 8));
-    ed.push_back((uint8_t)sps.size());
-    ed.insert(ed.end(), sps.begin(), sps.end());
-    ed.push_back(1);
-    ed.push_back((uint8_t)(pps.size() >> 8));
-    ed.push_back((uint8_t)pps.size());
-    ed.insert(ed.end(), pps.begin(), pps.end());
-    return ed;
-}
-
 static int MuxTsThenMp4(std::vector<OutPkt> &packets, AVCodecContext *venc,
                         AVCodecContext *aenc, const std::string &dstPath) {
     const std::string tsPath = dstPath + ".ts";
@@ -484,6 +402,7 @@ int VideoTranscodeToMp4(const std::string &srcPath, const std::string &dstPath,
             }
         }
 
+        // 手写 AVCC 极易在海思芯片上引发随机花屏，故采用 TS 中转 + FFmpeg 原生 remux。
         // ---- two-stage mux: AnnexB -> MPEG-TS -> MP4 remux ----
         if (!failed) {
             if (MuxTsThenMp4(packets, venc, aenc, dstPath) != 0) failed = 11;
@@ -530,9 +449,4 @@ int VideoTranscodeToMp4(const std::string &srcPath, const std::string &dstPath,
         return -1;
     }
     return 0;
-}static bool IsStart3(const uint8_t *d, int n, int i) {
-    return i + 3 <= n && d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1;
-}
-static bool IsStart4(const uint8_t *d, int n, int i) {
-    return i + 4 <= n && d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 0 && d[i + 3] == 1;
 }
