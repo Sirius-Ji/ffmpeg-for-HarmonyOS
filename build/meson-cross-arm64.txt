@@ -1,0 +1,16 @@
+[binaries]
+c = 'D:/Program Files/DevEco Studio/sdk/default/openharmony/native/llvm/bin/clang.exe'
+ar = 'D:/Program Files/DevEco Studio/sdk/default/openharmony/native/llvm/bin/llvm-ar.exe'
+cpp = 'D:/Program Files/DevEco Studio/sdk/default/openharmony/native/llvm/bin/clang++.exe'
+strip = 'D:/Program Files/DevEco Studio/sdk/default/openharmony/native/llvm/bin/llvm-strip.exe'
+
+[host_machine]
+system = 'linux'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+
+[built-in options]
+cpp_args = ['--target=aarch64-linux-ohos', '--sysroot=D:/Program Files/DevEco Studio/sdk/default/openharmony/native/sysroot', '-fPIC', '-D__OHOS__']
+c_args = ['--target=aarch64-linux-ohos', '--sysroot=D:/Program Files/DevEco Studio/sdk/default/openharmony/native/sysroot', '-fPIC', '-D__OHOS__']
+default_library = 'static'

@@ -20,6 +20,9 @@ extern "C" {
 #include <libavcodec/bsf.h>
 #include <libavutil/opt.h>
 #include <libavutil/channel_layout.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 #include <libswresample/swresample.h>
 }
 
@@ -29,6 +32,68 @@ extern "C" {
 #define LOG_TAG "FFM1"
 
 namespace {
+static std::string EscapeText(const std::string &in) {
+    std::string out;
+    for (char c : in) {
+        if (c == '\\' || c == '\'' || c == ':') out.push_back('\\');
+        out.push_back(c);
+    }
+    return out;
+}
+class WatermarkFilter {
+public:
+    ~WatermarkFilter() { if (graph_) avfilter_graph_free(&graph_); }
+    bool Init(const std::string &text, const std::string &position, int fontSize,
+              const std::string &colorIn, const std::string &fontPath, int alpha, bool bold,
+              int width, int height) {
+        graph_ = avfilter_graph_alloc();
+        if (!graph_) return false;
+        char args[256];
+        snprintf(args, sizeof(args),
+                 "video_size=%dx%d:pix_fmt=nv12:time_base=1/24:pixel_aspect=1/1",
+                 width, height);
+        if (avfilter_graph_create_filter(&src_, avfilter_get_by_name("buffer"), "in",
+                                         args, nullptr, graph_) < 0) return false;
+        if (avfilter_graph_create_filter(&sink_, avfilter_get_by_name("buffersink"), "out",
+                                         nullptr, nullptr, graph_) < 0) return false;
+        std::string x = "24", y = "24";
+        if (position == "top-right") { x = "w-tw-24"; }
+        else if (position == "bottom-left") { y = "h-th-24"; }
+        else if (position == "bottom-right") { x = "w-tw-24"; y = "h-th-24"; }
+        else if (position == "center") { x = "(w-tw)/2"; y = "(h-th)/2"; }
+        char color[128];
+        if (alpha < 100) {
+            snprintf(color, sizeof(color), "%s@%.2f", colorIn.c_str(), alpha / 100.0);
+        } else {
+            snprintf(color, sizeof(color), "%s", colorIn.c_str());
+        }
+        const char *border = bold ? ":borderw=2:bordercolor=black" : "";
+        char dt[2048];
+        snprintf(dt, sizeof(dt),
+                 "fontfile=%s:text='%s':x=%s:y=%s:fontsize=%d:fontcolor=%s%s",
+                 fontPath.c_str(), EscapeText(text).c_str(), x.c_str(), y.c_str(),
+                 fontSize, color, border);
+        if (avfilter_graph_create_filter(&draw_, avfilter_get_by_name("drawtext"), "draw",
+                                         dt, nullptr, graph_) < 0) return false;
+        if (avfilter_graph_create_filter(&fmt_, avfilter_get_by_name("format"), "fmt",
+                                         "pix_fmts=nv12", nullptr, graph_) < 0) return false;
+        if (avfilter_link(src_, 0, draw_, 0) < 0 || avfilter_link(draw_, 0, fmt_, 0) < 0 ||
+            avfilter_link(fmt_, 0, sink_, 0) < 0) return false;
+        if (avfilter_graph_config(graph_, nullptr) < 0) return false;
+        ready_ = true;
+        return true;
+    }
+    int Run(AVFrame *in, AVFrame *out) {
+        if (!ready_) return -1;
+        int ret = av_buffersrc_add_frame_flags(src_, in, AV_BUFFERSRC_FLAG_KEEP_REF);
+        if (ret < 0) return ret;
+        return av_buffersink_get_frame(sink_, out);
+    }
+private:
+    AVFilterGraph *graph_ = nullptr;
+    AVFilterContext *src_ = nullptr, *sink_ = nullptr, *draw_ = nullptr, *fmt_ = nullptr;
+    bool ready_ = false;
+};
 struct OutPkt {
     AVPacket *pkt = nullptr;
     int stream = 0;
@@ -196,9 +261,48 @@ std::string VideoTranscodeStatusJson() {
 int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                    const std::string &format, std::string *result) {
     SetStatus(1, "{\"state\":1}");
-    const bool hevc = (format == "hevc" || format == "h265");
-    const bool flv = (format == "flv");
-    const std::string container = (format == "mkv") ? "matroska" : (flv ? "flv" : "mp4");
+    const bool watermark = format.rfind("watermark|", 0) == 0;
+    std::string wmText = "FFmpeg-ohos", wmPosition = "top-left", wmColor = "white";
+    std::string fontPath;
+    int wmFontSize = 48;
+    int wmAlpha = 100;
+    bool wmBold = false;
+    if (watermark) {
+        std::string rest = format.substr(10);
+        std::vector<std::string> parts;
+        size_t start = 0;
+        while (true) {
+            size_t pos = rest.find('|', start);
+            parts.push_back(rest.substr(start, pos == std::string::npos ? std::string::npos : pos - start));
+            if (pos == std::string::npos) break;
+            start = pos + 1;
+        }
+        if (parts.size() >= 7) {
+            wmText = parts[0];
+            wmPosition = parts[1];
+            wmFontSize = atoi(parts[2].c_str());
+            if (wmFontSize < 8) wmFontSize = 8;
+            wmColor = parts[3];
+            fontPath = parts[4];
+            wmAlpha = atoi(parts[5].c_str());
+            if (wmAlpha < 0) wmAlpha = 0;
+            if (wmAlpha > 100) wmAlpha = 100;
+            wmBold = (parts[6] == "1");
+        } else if (parts.size() >= 5) {
+            wmText = parts[0];
+            wmPosition = parts[1];
+            wmFontSize = atoi(parts[2].c_str());
+            if (wmFontSize < 8) wmFontSize = 8;
+            wmColor = parts[3];
+            fontPath = parts[4];
+        } else {
+            fontPath = rest;
+        }
+    }
+    const std::string realFormat = watermark ? "mp4" : format;
+    const bool hevc = (realFormat == "hevc" || realFormat == "h265");
+    const bool flv = (realFormat == "flv");
+    const std::string container = (realFormat == "mkv") ? "matroska" : (flv ? "flv" : "mp4");
     OH_LOG_INFO(LOG_APP, "[vtrans] stage=0 start");
     AVFormatContext *in = nullptr, *out = nullptr;
     AVCodecContext *vdec = nullptr, *venc = nullptr, *adec = nullptr, *aenc = nullptr;
@@ -334,6 +438,9 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
             }
             avformat_flush(in);
             AVCodecParameters *par = in->streams[vidx]->codecpar;
+            const int outW = par->width & ~1;
+            const int outH = par->height & ~1;
+            OH_LOG_INFO(LOG_APP, "[vtrans] output %{public}dx%{public}d", outW, outH);
             const AVCodec *d = avcodec_find_decoder(par->codec_id);
             vdec = avcodec_alloc_context3(d);
             if (!d || !vdec || avcodec_parameters_to_context(vdec, par) < 0 ||
@@ -342,12 +449,12 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
             if (!failed && !e) failed = 4;
             if (!failed) {
                 venc = avcodec_alloc_context3(e);
-                venc->width = 1280;
-                venc->height = 720;
+                venc->width = outW;
+                venc->height = outH;
                 venc->time_base = AVRational{1, 24};
                 venc->framerate = AVRational{24, 1};
                 venc->pix_fmt = AV_PIX_FMT_NV12;
-                venc->bit_rate = 4000000;
+                venc->bit_rate = (outW >= 1920) ? 8000000 : 4000000;
                 venc->gop_size = 48;
                 venc->max_b_frames = 0;
                 AVDictionary *opts = nullptr;
@@ -360,12 +467,17 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                 frame = av_frame_alloc();
                 nv = av_frame_alloc();
                 nv->format = AV_PIX_FMT_NV12;
-                nv->width = 1280;
-                nv->height = 720;
+                nv->width = outW;
+                nv->height = outH;
                 if (av_frame_get_buffer(nv, 32) < 0) failed = 6;
             }
             if (!failed) {
                 pkt = av_packet_alloc();
+                WatermarkFilter wm;
+                const bool wmOk = watermark && wm.Init(wmText, wmPosition, wmFontSize, wmColor, fontPath, wmAlpha, wmBold, outW, outH);
+                if (watermark)
+                    OH_LOG_INFO(LOG_APP, "[vtrans] watermark=%{public}d font=%{public}s",
+                                wmOk ? 1 : 0, fontPath.c_str());
                 while (av_read_frame(in, pkt) >= 0) {
                     if (pkt->stream_index != vidx) { av_packet_unref(pkt); continue; }
                     if (avcodec_send_packet(vdec, pkt) == 0) {
@@ -373,7 +485,19 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                             av_frame_make_writable(nv);
                             ScaleToNv12(frame, nv);
                             nv->pts = frames++;
-                            if (avcodec_send_frame(venc, nv) == 0) {
+                            AVFrame *filtered = nullptr;
+                            AVFrame *sendFrame = nv;
+                            if (wmOk) {
+                                filtered = av_frame_alloc();
+                                if (filtered && wm.Run(nv, filtered) == 0) {
+                                    filtered->pts = nv->pts;
+                                    sendFrame = filtered;
+                                } else {
+                                    if (filtered) av_frame_free(&filtered);
+                                    filtered = nullptr;
+                                }
+                            }
+                            if (avcodec_send_frame(venc, sendFrame) == 0) {
                                 while (avcodec_receive_packet(venc, pkt) == 0) {
                                     OutPkt op;
                                     op.pkt = av_packet_clone(pkt);
@@ -396,6 +520,7 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                                     av_packet_unref(pkt);
                                 }
                             }
+                            if (filtered) av_frame_free(&filtered);
                         }
                     }
                     av_packet_unref(pkt);

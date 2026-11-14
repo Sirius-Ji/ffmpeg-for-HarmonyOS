@@ -42,6 +42,16 @@ set_target_properties(ff_swresample PROPERTIES
     IMPORTED_LOCATION ${FFMPEG_ROOT}/libswresample.so.7
     INTERFACE_INCLUDE_DIRECTORIES ${FFMPEG_INCLUDE})
 
+add_library(ff_avfilter SHARED IMPORTED)
+set_target_properties(ff_avfilter PROPERTIES
+    IMPORTED_LOCATION ${FFMPEG_ROOT}/libavfilter.so.12
+    INTERFACE_INCLUDE_DIRECTORIES ${FFMPEG_INCLUDE})
+
+add_library(ff_swscale SHARED IMPORTED)
+set_target_properties(ff_swscale PROPERTIES
+    IMPORTED_LOCATION ${FFMPEG_ROOT}/libswscale.so.10
+    INTERFACE_INCLUDE_DIRECTORIES ${FFMPEG_INCLUDE})
+
 # ---- NAPI 模块 ----
 add_library(entry SHARED
     napi_init.cpp
@@ -73,6 +83,8 @@ target_link_libraries(entry PUBLIC
     ff_avformat
     ff_avcodec
     ff_avutil
+    ff_avfilter
+    ff_swscale
     ff_swresample)
 
 # 链接时用 lib 目录解析传递依赖（libavcodec 依赖 libswresample 等）

@@ -86,16 +86,20 @@ build_one() {
   mkdir -p "$bdir"
   cd "$bdir"
 
-  local extra=""
+  local extra="--disable-asm"
   [ "$arch" = "x86_64" ] && extra="--disable-x86asm"
 
   log "configure $abi"
+  export PKG_CONFIG_PATH="$OUT/$abi/lib/pkgconfig"
+  export FT_PREFIX="$OUT/$abi"
+  export HB_PREFIX="$OUT/$abi"
   "$SRC/configure" \
     --target-os=linux \
     --arch="$arch" \
     --enable-cross-compile \
     --cc="$tdir/cc" \
     --cxx="$tdir/cxx" \
+    --pkg-config="$ROOT/build/freetype-pkg-config.sh" \
     --ld="$tdir/cc" \
     --ar="$tdir/ar" \
     --ranlib="$tdir/ranlib" \
@@ -103,15 +107,16 @@ build_one() {
     --strip="$tdir/strip" \
     --host-cc="${HOSTCC:-$tdir/cc}" \
     $SYSFLAG \
-    --extra-cflags="-D__MUSL__ -I$OUT/$abi/include -ffile-prefix-map=$ROOT=/build" \
+    --extra-cflags="-D__MUSL__ -I$OUT/$abi/include -I$OUT/$abi/include/freetype2 -I$OUT/$abi/include/harfbuzz -ffile-prefix-map=$ROOT=/build" \
     --extra-ldflags="-Wl,-z,max-page-size=16384 -L$OUT/$abi/lib" \
     --prefix="$OUT/$abi" \
     --enable-shared --disable-static \
-    --disable-programs --disable-doc --disable-avdevice --disable-avfilter \
-    --disable-swscale --disable-network --disable-iconv --disable-autodetect \
+    --disable-programs --disable-doc --disable-avdevice \
+    --disable-network --disable-iconv --disable-autodetect \
     --disable-vulkan \
     --disable-everything \
-    --enable-avformat --enable-avcodec --enable-avutil --enable-swresample \
+    --enable-avformat --enable-avcodec --enable-avutil --enable-swresample --enable-avfilter --enable-swscale \
+    --enable-libfreetype --enable-libharfbuzz --enable-filter=drawtext,scale,overlay,format \
     --enable-ohcodec \
     --enable-decoder=h264_oh,hevc_oh,h264,hevc,aac,ac3,eac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2 \
     --enable-encoder=aac,alac,flac,pcm_s16le,pcm_s24le,libmp3lame,opus,h264_oh,hevc_oh \
@@ -126,7 +131,7 @@ build_one() {
       log "configure FAILED ($abi)"; tail -40 "$LOGS/configure-$abi.log"; return 1; }
 
   log "make $abi (-j$JOBS)"
-  make -j"$JOBS" > "$LOGS/build-$abi.log" 2>&1 || {
+  make -j"$JOBS" FF_WHOLE_LIBS="$OUT/$abi/lib/libharfbuzz.a $OUT/$abi/lib/libfreetype.a" > "$LOGS/build-$abi.log" 2>&1 || {
     log "make FAILED ($abi)"; tail -40 "$LOGS/build-$abi.log"; return 1; }
 
   log "install $abi -> $OUT/$abi"

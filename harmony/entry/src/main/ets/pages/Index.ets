@@ -18,6 +18,12 @@ struct Index {
   @State copyPercent: number = -1;
   @State surfaceId: string = '';
   @State volume: number = 1.0;
+  @State wmText: string = 'FFmpeg-ohos';
+  @State wmPosition: string = 'top-left';
+  @State wmColor: string = 'white';
+  @State wmSize: number = 48;
+  @State wmAlpha: number = 100;
+  @State wmBold: boolean = false;
   private timer: number = -1;
   private videoController: XComponentController = new XComponentController();
 
@@ -180,6 +186,26 @@ struct Index {
         .fontSize(13)
         .enabled(!this.busy)
         .onClick(() => { this.extractVideo(); })
+
+      Row({ space: 8 }) {
+        TextInput({ text: this.wmText, placeholder: '水印文字' }).width(150)
+          .onChange((v: string) => { this.wmText = v; })
+        TextInput({ text: this.wmPosition, placeholder: 'top-left' }).width(120)
+          .onChange((v: string) => { this.wmPosition = v; })
+        TextInput({ text: this.wmColor, placeholder: 'white' }).width(100)
+          .onChange((v: string) => { this.wmColor = v; })
+        TextInput({ text: String(this.wmSize), placeholder: '48' }).width(70)
+          .onChange((v: string) => { this.wmSize = parseInt(v) || 48; })
+        TextInput({ text: String(this.wmAlpha), placeholder: '100' }).width(60)
+          .onChange((v: string) => { this.wmAlpha = parseInt(v) || 100; })
+        Toggle({ type: ToggleType.Switch, isOn: this.wmBold })
+          .onChange((v: boolean) => { this.wmBold = v; })
+      }
+
+      Button('视频加文字水印')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.watermarkVideo(); })
 
       Button('停止视频')
         .fontSize(13)
@@ -554,6 +580,33 @@ struct Index {
       this.status = `M4.4 转码已启动: ${format} -> ${dst}`;
     } catch (e) {
       this.status = `格式转码异常: ${JSON.stringify(e)}`;
+    }
+  }
+
+  async watermarkVideo(): Promise<void> {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('bbb_1080_10s.mp4');
+      const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
+      const dst = `${ctx.filesDir}/watermark.mp4`;
+      this.status = 'M4.5 水印转码中…';
+      native.videoTranscode(src, dst,
+        `watermark|${this.wmText}|${this.wmPosition}|${this.wmSize}|${this.wmColor}|${font}|${this.wmAlpha}|${this.wmBold ? 1 : 0}`);
+      for (let i = 0; i < 240; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
+        const s = JSON.parse(native.videoTranscodeStatus().data) as Record<string, number>;
+        if (s.state === 2) {
+          this.status = `水印完成 ${s.size} bytes`;
+          native.videoPlay(dst, this.surfaceId, false, false);
+          return;
+        }
+        if (s.state === 3) {
+          this.status = `水印失败 stage=${s.stage}`;
+          return;
+        }
+      }
+    } catch (e) {
+      this.status = `水印异常: ${JSON.stringify(e)}`;
     }
   }
 

@@ -70,3 +70,19 @@ harmony/build-profile.json5
 
 # Local generated test videos (rebuild via test/gen_video.sh)
 test/*.mp4
+
+third_party/freetype-*
+third_party/harfbuzz-*
+build/m45-entry-build-backup/
+build/m45-cmake-backup/
+build/m45-backup/
+
+/Makefile
+/config.mk
+/modules.cfg
+build/freetype-arm64-v8a/
+build/freetype-x86_64/
+build/freetype-arm64/
+build/freetype-toolchain/
+build/pkg-config
+
