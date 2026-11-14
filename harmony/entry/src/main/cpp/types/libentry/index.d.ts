@@ -33,7 +33,7 @@ declare const native: {
   videoPlay: (path: string, surfaceId: string, bufferMode?: boolean, cropMode?: boolean) => NapiResult;
   videoStop: () => NapiResult;
   videoTranscodeToMp4: (srcPath: string, dstPath: string, format?: string) => NapiResult;
-  videoTranscode: (srcPath: string, dstPath: string, format?: string, resolution?: string) => NapiResult;
+  videoTranscode: (srcPath: string, dstPath: string, format?: string, resolution?: string, volume?: number) => NapiResult;
   extractMedia: (srcPath: string, dstPath: string, type: string) => NapiResult;
   videoTranscodeStatus: () => NapiResult;
   setVolume: (volume: number) => NapiResult;

@@ -25,6 +25,7 @@ struct Index {
   @State wmAlpha: number = 100;
   @State wmBold: boolean = false;
   @State resolution: string = '720p';
+  @State convertVolume: number = 1.0;
   private timer: number = -1;
   private videoController: XComponentController = new XComponentController();
 
@@ -211,6 +212,13 @@ struct Index {
         .selected(1)
         .value(this.resolution)
         .onSelect((index: number, value: string) => { this.resolution = value; })
+
+      Row({ space: 8 }) {
+        Text(`音量 ${this.convertVolume.toFixed(2)}`).fontSize(12)
+        Slider({ value: this.convertVolume, min: 0, max: 2, step: 0.05 })
+          .width(220)
+          .onChange((v: number) => { this.convertVolume = v; })
+      }
 
       Button('视频加文字水印')
         .fontSize(13)
@@ -602,7 +610,8 @@ struct Index {
       this.status = 'M4.5 水印转码中…';
       native.videoTranscode(src, dst,
         `watermark|${this.wmText}|${this.wmPosition}|${this.wmSize}|${this.wmColor}|${font}|${this.wmAlpha}|${this.wmBold ? 1 : 0}`,
-        this.resolution);
+        this.resolution,
+        this.convertVolume);
       for (let i = 0; i < 240; i++) {
         await new Promise<void>((resolve) => setTimeout(resolve, 500));
         const s = JSON.parse(native.videoTranscodeStatus().data) as Record<string, number>;

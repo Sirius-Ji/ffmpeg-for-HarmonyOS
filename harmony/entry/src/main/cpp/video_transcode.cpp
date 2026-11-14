@@ -291,7 +291,7 @@ std::string VideoTranscodeStatusJson() {
 
 int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                    const std::string &format, const std::string &resolution,
-                   std::string *result) {
+                   float volume, std::string *result) {
     SetStatus(1, "{\"state\":1}");
     OH_LOG_INFO(LOG_APP, "[M4.6_BUILD_VER] Native Res=%{public}s scale_enabled=1", resolution.c_str());
     const bool watermark = format.rfind("watermark|", 0) == 0;
@@ -436,8 +436,10 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                     float *l = (float *)af->extended_data[0];
                     float *r = (float *)af->extended_data[1];
                     for (int i = 0; i < n; ++i) {
-                        l[i] = pcm[(size_t)(pos + i) * 2];
-                        r[i] = pcm[(size_t)(pos + i) * 2 + 1];
+                        float lv = pcm[(size_t)(pos + i) * 2] * volume;
+                        float rv = pcm[(size_t)(pos + i) * 2 + 1] * volume;
+                        l[i] = lv > 1.0f ? 1.0f : (lv < -1.0f ? -1.0f : lv);
+                        r[i] = rv > 1.0f ? 1.0f : (rv < -1.0f ? -1.0f : rv);
                     }
                     if (n < fs)
                         for (int ch = 0; ch < 2; ++ch)
