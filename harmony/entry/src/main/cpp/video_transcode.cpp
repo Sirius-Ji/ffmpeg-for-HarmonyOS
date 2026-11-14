@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <sstream>
@@ -65,87 +66,122 @@ void ScaleToNv12(const AVFrame *src, AVFrame *dst) {
         }
     }
 }
-static bool IsStart3(const uint8_t *d, int n, int i) {
-    return i + 3 <= n && d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1;
-}
-static bool IsStart4(const uint8_t *d, int n, int i) {
-    return i + 4 <= n && d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 0 && d[i + 3] == 1;
-}
-static int NextStart(const uint8_t *d, int n, int from) {
-    for (int i = from; i + 3 <= n; ++i)
-        if (IsStart3(d, n, i) || IsStart4(d, n, i)) return i;
-    return n;
-}
-static bool ParseAnnexBParams(const uint8_t *d, int n, std::vector<uint8_t> &sps,
-                              std::vector<uint8_t> &pps) {
-    int i = 0;
-    while (i + 3 <= n) {
-        int sc = NextStart(d, n, i);
-        if (sc >= n) break;
-        const int sl = IsStart4(d, n, sc) ? 4 : 3;
-        const int ns = sc + sl;
-        const int ne = NextStart(d, n, ns);
-        if (ne <= ns) break;
-        if ((d[ns] & 0x1f) == 7) sps.assign(d + ns, d + ne);
-        else if ((d[ns] & 0x1f) == 8) pps.assign(d + ns, d + ne);
-        i = ne;
-    }
-    return !sps.empty() && !pps.empty();
-}
-static bool AnnexBToAvcc(AVPacket *&pkt, std::vector<uint8_t> &sps, std::vector<uint8_t> &pps) {
-    const uint8_t *d = pkt->data;
-    const int n = pkt->size;
-    std::vector<uint8_t> out;
-    int i = 0;
-    while (i + 3 <= n) {
-        int sc = NextStart(d, n, i);
-        if (sc >= n) break;
-        const int sl = IsStart4(d, n, sc) ? 4 : 3;
-        const int ns = sc + sl;
-        const int ne = NextStart(d, n, ns);
-        if (ne <= ns) break;
-        const int type = d[ns] & 0x1f;
-        if (type == 7) sps.assign(d + ns, d + ne);
-        else if (type == 8) pps.assign(d + ns, d + ne);
-        else {
-            const uint32_t len = (uint32_t)(ne - ns);
-            out.push_back((uint8_t)(len >> 24));
-            out.push_back((uint8_t)(len >> 16));
-            out.push_back((uint8_t)(len >> 8));
-            out.push_back((uint8_t)len);
-            out.insert(out.end(), d + ns, d + ne);
+static int MuxTsThenMp4(std::vector<OutPkt> &packets, AVCodecContext *venc,
+                        AVCodecContext *aenc, const std::string &dstPath) {
+    const std::string tsPath = dstPath + ".ts";
+    AVFormatContext *ts = nullptr;
+    if (avformat_alloc_output_context2(&ts, nullptr, "mpegts", tsPath.c_str()) < 0) return -1;
+    AVStream *vst = nullptr, *ast = nullptr;
+    if (venc) {
+        vst = avformat_new_stream(ts, nullptr);
+        avcodec_parameters_from_context(vst->codecpar, venc);
+        vst->time_base = AVRational{1, 90000};  // TS 标准时间基
+        vst->codecpar->codec_tag = 0;
+        OH_LOG_INFO(LOG_APP, "[vtrans] ts video codec=%{public}d extradata=%{public}d",
+                    (int)vst->codecpar->codec_id, vst->codecpar->extradata_size);
+        if (venc->extradata && venc->extradata_size > 0 &&
+            vst->codecpar->extradata == nullptr) {
+            vst->codecpar->extradata = (uint8_t *)av_mallocz(
+                venc->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
+            if (vst->codecpar->extradata) {
+                memcpy(vst->codecpar->extradata, venc->extradata, venc->extradata_size);
+                vst->codecpar->extradata_size = venc->extradata_size;
+            }
         }
-        i = ne;
     }
-    if (out.empty()) return false;
-    AVPacket *np = av_packet_alloc();
-    av_new_packet(np, (int)out.size());
-    memcpy(np->data, out.data(), out.size());
-    np->pts = pkt->pts;
-    np->dts = pkt->dts;
-    np->flags = pkt->flags;
+    if (aenc) {
+        ast = avformat_new_stream(ts, nullptr);
+        avcodec_parameters_from_context(ast->codecpar, aenc);
+        ast->time_base = aenc->time_base;
+    }
+    if (avio_open(&ts->pb, tsPath.c_str(), AVIO_FLAG_WRITE) < 0 ||
+        avformat_write_header(ts, nullptr) < 0) {
+        avformat_free_context(ts);
+        return -2;
+    }
+    std::sort(packets.begin(), packets.end(),
+              [](const OutPkt &a, const OutPkt &b) { return a.when < b.when; });
+    int64_t lastVideoDts = -1;
+    int videoLog = 0;
+    for (auto &p : packets) {
+        AVStream *st = p.stream == 0 ? vst : ast;
+        if (!st) { av_packet_free(&p.pkt); continue; }
+        av_packet_rescale_ts(p.pkt, p.tb, st->time_base);
+        p.pkt->stream_index = st->index;
+        p.pkt->pos = -1;
+        if (p.stream == 0) {
+            if (p.pkt->dts <= lastVideoDts)
+                OH_LOG_WARN(LOG_APP, "[vtrans] DTS regress last=%{public}lld now=%{public}lld",
+                            (long long)lastVideoDts, (long long)p.pkt->dts);
+            lastVideoDts = p.pkt->dts;
+        }
+        int ret = av_interleaved_write_frame(ts, p.pkt);
+        if (p.stream == 0 && videoLog < 6) {
+            char e[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(ret, e, sizeof(e));
+            OH_LOG_INFO(LOG_APP, "[vtrans] ts pkt pts=%{public}lld dts=%{public}lld size=%{public}d key=%{public}d ret=%{public}d %{public}s",
+                        (long long)p.pkt->pts, (long long)p.pkt->dts, p.pkt->size,
+                        (p.pkt->flags & AV_PKT_FLAG_KEY) ? 1 : 0, ret, e);
+            videoLog++;
+        } else if (ret < 0) {
+            char e[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(ret, e, sizeof(e));
+            OH_LOG_ERROR(LOG_APP, "[vtrans] ts write ret=%{public}d %{public}s", ret, e);
+        }
+        av_packet_free(&p.pkt);
+    }
+    packets.clear();
+    av_write_trailer(ts);
+    avio_closep(&ts->pb);
+    avformat_free_context(ts);
+
+    // remux: TS -> MP4，-c copy 等价，由 FFmpeg 提取 extradata/转 AVCC
+    AVFormatContext *in = nullptr, *out = nullptr;
+    if (avformat_open_input(&in, tsPath.c_str(), nullptr, nullptr) < 0) return -3;
+    if (avformat_find_stream_info(in, nullptr) < 0) { avformat_close_input(&in); return -4; }
+    if (avformat_alloc_output_context2(&out, nullptr, "mp4", dstPath.c_str()) < 0) {
+        avformat_close_input(&in); return -5;
+    }
+    int vmap[8], amap[8];
+    for (int i = 0; i < 8; ++i) { vmap[i] = -1; amap[i] = -1; }
+    for (unsigned i = 0; i < in->nb_streams && i < 8; ++i) {
+        AVStream *src = in->streams[i];
+        if (src->codecpar->codec_type != AVMEDIA_TYPE_VIDEO &&
+            src->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) continue;
+        AVStream *dst = avformat_new_stream(out, nullptr);
+        avcodec_parameters_copy(dst->codecpar, src->codecpar);
+        dst->time_base = src->time_base;
+        dst->codecpar->codec_tag = 0;
+        if (src->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) vmap[i] = dst->index;
+        else amap[i] = dst->index;
+    }
+    if (avio_open(&out->pb, dstPath.c_str(), AVIO_FLAG_WRITE) < 0 ||
+        avformat_write_header(out, nullptr) < 0) {
+        avio_closep(&out->pb); avformat_free_context(out); avformat_close_input(&in); return -6;
+    }
+    AVPacket *pkt = av_packet_alloc();
+    int written = 0;
+    while (av_read_frame(in, pkt) >= 0) {
+        if (pkt->stream_index >= 0 && pkt->stream_index < 8 &&
+            (vmap[pkt->stream_index] >= 0 || amap[pkt->stream_index] >= 0)) {
+            AVStream *src = in->streams[pkt->stream_index];
+            AVStream *dst = out->streams[vmap[pkt->stream_index] >= 0
+                                             ? vmap[pkt->stream_index] : amap[pkt->stream_index]];
+            av_packet_rescale_ts(pkt, src->time_base, dst->time_base);
+            pkt->stream_index = dst->index;
+            pkt->pos = -1;
+            av_interleaved_write_frame(out, pkt);
+            written++;
+        }
+        av_packet_unref(pkt);
+    }
     av_packet_free(&pkt);
-    pkt = np;
-    return true;
-}
-static std::vector<uint8_t> BuildAvcC(const std::vector<uint8_t> &sps,
-                                      const std::vector<uint8_t> &pps) {
-    std::vector<uint8_t> ed;
-    if (sps.size() < 4 || pps.empty()) return ed;
-    ed.push_back(1);
-    ed.push_back(sps[1]);
-    ed.push_back(sps[2]);
-    ed.push_back(sps[3]);
-    ed.push_back(0xFF);
-    ed.push_back(0xE1);
-    ed.push_back((uint8_t)(sps.size() >> 8));
-    ed.push_back((uint8_t)sps.size());
-    ed.insert(ed.end(), sps.begin(), sps.end());
-    ed.push_back(1);
-    ed.push_back((uint8_t)(pps.size() >> 8));
-    ed.push_back((uint8_t)pps.size());
-    ed.insert(ed.end(), pps.begin(), pps.end());
-    return ed;
+    av_write_trailer(out);
+    avio_closep(&out->pb);
+    avformat_free_context(out);
+    avformat_close_input(&in);
+    OH_LOG_INFO(LOG_APP, "[vtrans] remux packets=%{public}d", written);
+    return written > 0 ? 0 : -7;
 }
 }  // namespace
 
@@ -366,59 +402,11 @@ int VideoTranscodeToMp4(const std::string &srcPath, const std::string &dstPath,
             }
         }
 
-        // ---- mux ----
+        // 手写 AVCC 极易在海思芯片上引发随机花屏，故采用 TS 中转 + FFmpeg 原生 remux。
+        // ---- two-stage mux: AnnexB -> MPEG-TS -> MP4 remux ----
         if (!failed) {
-            OH_LOG_INFO(LOG_APP, "[vtrans] stage=10 mux packets=%{public}d", (int)packets.size());
-            // OH 编码器输出 AnnexB；mp4 需要 AVCC + avcC extradata
-            std::vector<uint8_t> sps, pps;
-            for (auto &p : packets) {
-                if (p.stream == 0) AnnexBToAvcc(p.pkt, sps, pps);
-            }
-            if ((sps.empty() || pps.empty()) && venc && venc->extradata)
-                ParseAnnexBParams(venc->extradata, venc->extradata_size, sps, pps);
-            std::vector<uint8_t> avcc = BuildAvcC(sps, pps);
-            OH_LOG_INFO(LOG_APP, "[vtrans] stage=11 avcc extradata=%{public}d",
-                        (int)avcc.size());
-            if (avformat_alloc_output_context2(&out, nullptr, "mp4", dstPath.c_str()) < 0) failed = 11;
-            AVStream *vst = nullptr, *ast = nullptr;
-            if (!failed && venc) {
-                vst = avformat_new_stream(out, nullptr);
-                avcodec_parameters_from_context(vst->codecpar, venc);
-                vst->time_base = AVRational{1, 90000};
-                vst->avg_frame_rate = AVRational{24, 1};
-                vst->r_frame_rate = AVRational{24, 1};
-                if (!avcc.empty()) {
-                    vst->codecpar->extradata = (uint8_t *)av_mallocz(avcc.size() + AV_INPUT_BUFFER_PADDING_SIZE);
-                    if (vst->codecpar->extradata) {
-                        memcpy(vst->codecpar->extradata, avcc.data(), avcc.size());
-                        vst->codecpar->extradata_size = (int)avcc.size();
-                    }
-                }
-            }
-            if (!failed && aenc) {
-                ast = avformat_new_stream(out, nullptr);
-                avcodec_parameters_from_context(ast->codecpar, aenc);
-                ast->time_base = aenc->time_base;
-            }
-            if (!failed && (avio_open(&out->pb, dstPath.c_str(), AVIO_FLAG_WRITE) < 0 ||
-                            avformat_write_header(out, nullptr) < 0)) failed = 12;
-            if (!failed) {
-                std::sort(packets.begin(), packets.end(),
-                          [](const OutPkt &a, const OutPkt &b) { return a.when < b.when; });
-                for (auto &p : packets) {
-                    AVStream *st = p.stream == 0 ? vst : ast;
-                    if (!st) { av_packet_free(&p.pkt); continue; }
-                    av_packet_rescale_ts(p.pkt, p.tb, st->time_base);
-                    p.pkt->stream_index = st->index;
-                    p.pkt->pos = -1;
-                    av_interleaved_write_frame(out, p.pkt);
-                    av_packet_free(&p.pkt);
-                }
-                packets.clear();
-                av_write_trailer(out);
-            }
+            if (MuxTsThenMp4(packets, venc, aenc, dstPath) != 0) failed = 11;
         }
-
         if (out) {
             if (out->pb) avio_closep(&out->pb);
             avformat_free_context(out);
@@ -461,9 +449,4 @@ int VideoTranscodeToMp4(const std::string &srcPath, const std::string &dstPath,
         return -1;
     }
     return 0;
-}static bool IsStart3(const uint8_t *d, int n, int i) {
-    return i + 3 <= n && d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1;
-}
-static bool IsStart4(const uint8_t *d, int n, int i) {
-    return i + 4 <= n && d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 0 && d[i + 3] == 1;
 }
