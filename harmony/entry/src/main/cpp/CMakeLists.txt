@@ -50,6 +50,7 @@ add_library(entry SHARED
     transcoder.cpp
     hardware_probe.cpp
     video_probe.cpp
+    video_player.cpp
     ohcodec_decoder.cpp)
 
 target_include_directories(entry PRIVATE ${NATIVE_ROOT})
@@ -65,6 +66,8 @@ target_link_libraries(entry PUBLIC
     libnative_media_core.so
     # M4.0 视频探针：VideoDecoder（H.264/H.265 capability + CreateByMime）
     libnative_media_vdec.so
+    # M4.1 surface 播放：surfaceId → OHNativeWindow
+    libnative_window.so
     ff_avformat
     ff_avcodec
     ff_avutil

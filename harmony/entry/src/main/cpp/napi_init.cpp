@@ -17,6 +17,7 @@
 #include "decoder.h"
 #include "hardware_probe.h"
 #include "video_probe.h"
+#include "video_player.h"
 #include "transcoder.h"
 
 #undef LOG_DOMAIN
@@ -330,6 +331,26 @@ napi_value VideoProbeFn(napi_env env, napi_callback_info /*info*/) {
     return MakeResult(env, true, json);
 }
 
+// M4.1：videoPlay(path, surfaceId) —— 启动后台线程，把 H.264 解到 XComponent surface
+napi_value VideoPlayFn(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 2) return ResultError(env, "videoPlay(path, surfaceId): missing args");
+    const std::string path = GetString(env, argv[0]);
+    const std::string surfaceId = GetString(env, argv[1]);
+    std::string json;
+    if (VideoPlay(path, surfaceId, &json) != 0) {
+        return MakeResult(env, false, json);
+    }
+    return MakeResult(env, true, json);
+}
+
+napi_value VideoStopFn(napi_env env, napi_callback_info /*info*/) {
+    VideoStop();
+    return MakeResult(env, true, "{\"state\":\"stopped\"}");
+}
+
 // M3.1：硬解开关（A/B 对比用），影响下一次 Open
 napi_value DecoderSetHardwareFn(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -394,6 +415,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"transcodeByPath", nullptr, TranscodeByPathFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"hardwareProbe", nullptr, HardwareProbeFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"videoProbe", nullptr, VideoProbeFn, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"videoPlay", nullptr, VideoPlayFn, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"videoStop", nullptr, VideoStopFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"decoderSetHardware", nullptr, DecoderSetHardwareFn, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);

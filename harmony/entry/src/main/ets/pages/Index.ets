@@ -15,7 +15,9 @@ struct Index {
   @State busy: boolean = false;
   @State hardwareOn: boolean = true;
   @State copyPercent: number = -1;
+  @State surfaceId: string = '';
   private timer: number = -1;
+  private videoController: XComponentController = new XComponentController();
 
   aboutToDisappear(): void {
     this.stopPolling();
@@ -26,6 +28,16 @@ struct Index {
       Text('ffmpeg-for-HarmonyOS · M2 播放自检')
         .fontSize(18)
         .fontWeight(FontWeight.Bold)
+
+      // M4.1：视频渲染目标。surfaceId 在 onLoad 时拿到，交给 C++ 零拷贝解码。
+      XComponent({ id: 'videoSurface', type: XComponentType.SURFACE, controller: this.videoController })
+        .width('100%')
+        .height(260)
+        .backgroundColor(Color.Black)
+        .onLoad(() => {
+          this.surfaceId = this.videoController.getXComponentSurfaceId();
+          this.status = `视频 Surface 就绪: ${this.surfaceId}`;
+        })
 
       Row({ space: 12 }) {
         Button('Play（内置样例）')
@@ -97,6 +109,20 @@ struct Index {
         .enabled(!this.busy)
         .onClick(() => {
           this.runVideoProbe();
+        })
+
+      Button('M4.1 播放视频（BBB 1080p）')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => {
+          this.playVideo();
+        })
+
+      Button('停止视频')
+        .fontSize(13)
+        .onClick(() => {
+          native.videoStop();
+          this.status = '视频已停止';
         })
 
       Button(this.hardwareOn ? '硬解开关：开（AAC）' : '硬解开关：关（走软解）')
@@ -393,6 +419,32 @@ struct Index {
       hilog.error(DOMAIN, TAG, 'transcodeByPath failed: %{public}s', msg);
     } finally {
       this.busy = false;
+    }
+  }
+
+  // M4.1：把 rawfile 里的 BBB 复制到应用沙箱，再交给 native 解码到 XComponent surface
+  async playVideo(): Promise<void> {
+    if (this.surfaceId.length === 0) {
+      this.status = '视频 Surface 还没就绪';
+      return;
+    }
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const name = 'bbb_1080_10s.mp4';
+      const path = `${ctx.filesDir}/${name}`;
+      if (!fs.accessSync(path)) {
+        const data = await ctx.resourceManager.getRawFileContent(name);
+        const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+        fs.writeSync(file.fd, data.buffer as ArrayBuffer);
+        fs.closeSync(file);
+        hilog.info(DOMAIN, TAG, 'video copied to sandbox: %{public}s', path);
+      }
+      const res = native.videoPlay(path, this.surfaceId);
+      this.status = res.ok ? `视频播放已启动: ${res.data}` : `视频播放失败: ${res.data}`;
+      hilog.info(DOMAIN, TAG, 'videoPlay ok=%{public}s', String(res.ok));
+    } catch (e) {
+      this.status = `视频播放异常: ${JSON.stringify(e)}`;
+      hilog.error(DOMAIN, TAG, 'videoPlay failed: %{public}s', JSON.stringify(e));
     }
   }
 
