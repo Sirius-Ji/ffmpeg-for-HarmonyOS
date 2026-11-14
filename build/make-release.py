@@ -31,10 +31,10 @@ LIB_RE = re.compile(r"^lib(%s)\.so\.(\d+)$" % "|".join(LIB_NAMES))
 
 COMPONENTS = {
     "decoders": "aac ac3 eac3 alac ape dca flac mp3 mp3float opus pcm_s16le pcm_s24le pcm_s32le wmav2 h264_oh hevc_oh h264 hevc",
-    "encoders": "aac alac flac libmp3lame opus pcm_s16le pcm_s24le h264_oh",
-    "muxers": "mp4 mov ipod mp3 flac wav matroska adts ogg opus mpegts",
-    "demuxers": "mov matroska ogg flac ape dsf wav mp3 aac tta wv caf asf mpegts",
-    "bsf": "aac_adtstoasc extract_extradata",
+    "encoders": "aac alac flac libmp3lame opus pcm_s16le pcm_s24le h264_oh hevc_oh",
+    "muxers": "mp4 mov ipod mp3 flac wav matroska adts ogg opus mpegts flv",
+    "demuxers": "mov matroska ogg flac ape dsf wav mp3 aac tta wv caf asf mpegts flv",
+    "bsf": "aac_adtstoasc extract_extradata h264_mp4toannexb",
     "parsers": "aac ac3 dca flac h264 hevc mpegaudio opus",
     "notes": "MP3 编码走 libmp3lame（LGPL-2.1）；Opus 编码为 FFmpeg 原生实验性实现，需 strict_std_compliance=EXPERIMENTAL",
 }
