@@ -19,6 +19,7 @@
 #include "video_probe.h"
 #include "video_player.h"
 #include "video_transcode.h"
+#include "extract_media.h"
 #include "transcoder.h"
 
 #undef LOG_DOMAIN
@@ -355,23 +356,35 @@ napi_value VideoTranscodeStatusFn(napi_env env, napi_callback_info /*info*/) {
     return MakeResult(env, true, VideoTranscodeStatusJson());
 }
 
+napi_value ExtractMediaFn(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 3) return ResultError(env, "extractMedia(src,dst,type): missing args");
+    std::string json;
+    int rc = ExtractMedia(GetString(env, argv[0]), GetString(env, argv[1]),
+                          GetString(env, argv[2]), &json);
+    return MakeResult(env, rc == 0, json);
+}
+
 napi_value VideoStopFn(napi_env env, napi_callback_info /*info*/) {
     VideoStop();
     return MakeResult(env, true, "{\"state\":\"stopped\"}");
 }
 
 napi_value VideoTranscodeToMp4Fn(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value argv[2] = {nullptr, nullptr};
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc < 2) return ResultError(env, "videoTranscodeToMp4(src,dst): missing args");
+    if (argc < 2) return ResultError(env, "videoTranscode(src,dst[,format]): missing args");
     const std::string src = GetString(env, argv[0]);
     const std::string dst = GetString(env, argv[1]);
-    std::thread([src, dst]() {
+    const std::string format = argc >= 3 ? GetString(env, argv[2]) : "mp4";
+    std::thread([src, dst, format]() {
         std::string json;
-        VideoTranscodeToMp4(src, dst, &json);
+        VideoTranscode(src, dst, format, &json);
     }).detach();
-    return MakeResult(env, true, "{\"state\":\"started\",\"diagnostic\":\"video-only\"}");
+    return MakeResult(env, true, "{\"state\":\"started\"}");
 }
 
 napi_value SetVolumeFn(napi_env env, napi_callback_info info) {
@@ -454,6 +467,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"videoPlay", nullptr, VideoPlayFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"videoStop", nullptr, VideoStopFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"videoTranscodeToMp4", nullptr, VideoTranscodeToMp4Fn, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"videoTranscode", nullptr, VideoTranscodeToMp4Fn, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"extractMedia", nullptr, ExtractMediaFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"videoTranscodeStatus", nullptr, VideoTranscodeStatusFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setVolume", nullptr, SetVolumeFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"decoderSetHardware", nullptr, DecoderSetHardwareFn, nullptr, nullptr, nullptr, napi_default, nullptr},

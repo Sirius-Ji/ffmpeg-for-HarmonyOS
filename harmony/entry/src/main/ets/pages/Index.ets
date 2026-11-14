@@ -1,5 +1,6 @@
 import { fileIo as fs, picker } from '@kit.CoreFileKit';
 import { common } from '@kit.AbilityKit';
+import { promptAction } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 // NAPI 模块：libentry.so，C 侧 nm_modname = "entry"
 import native from 'libentry.so';
@@ -152,6 +153,33 @@ struct Index {
         .onClick(() => {
           this.transcodeVideo();
         })
+
+      Button('M4.4 提取纯音频')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => {
+          this.extractAudio();
+        })
+
+      Button('M4.4 转 MKV')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.transcodeFormat('mkv'); })
+
+      Button('M4.4 转 FLV')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.transcodeFormat('flv'); })
+
+      Button('M4.4 转 HEVC')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.transcodeFormat('hevc'); })
+
+      Button('M4.4 提取纯视频')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.extractVideo(); })
 
       Button('停止视频')
         .fontSize(13)
@@ -492,7 +520,7 @@ struct Index {
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const dst = `${ctx.filesDir}/output.mp4`;
       this.status = 'M4.3 转码中…';
-      native.videoTranscodeToMp4(src, dst);
+      native.videoTranscode(src, dst, 'mp4');
       for (let i = 0; i < 240; i++) {
         await new Promise<void>((resolve) => setTimeout(resolve, 500));
         const s = JSON.parse(native.videoTranscodeStatus().data) as Record<string, number>;
@@ -509,6 +537,48 @@ struct Index {
       this.status = '转码超时';
     } catch (e) {
       this.status = `转码异常: ${JSON.stringify(e)}`;
+    }
+  }
+
+  async transcodeFormat(format: string): Promise<void> {
+    if (format === 'hevc') {
+      promptAction.showToast({ message: '当前设备不支持 HEVC 编码', duration: 2500 });
+      this.status = '当前设备不支持 HEVC 编码';
+      return;
+    }
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('bbb_rabbit_30s.mp4');
+      const dst = `${ctx.filesDir}/output.${format}`;
+      native.videoTranscode(src, dst, format);
+      this.status = `M4.4 转码已启动: ${format} -> ${dst}`;
+    } catch (e) {
+      this.status = `格式转码异常: ${JSON.stringify(e)}`;
+    }
+  }
+
+  async extractVideo(): Promise<void> {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('bbb_rabbit_30s.mp4');
+      const dst = `${ctx.filesDir}/output.h264`;
+      const res = native.extractMedia(src, dst, 'video');
+      this.status = res.ok ? `提取视频完成: ${res.data}` : `提取视频失败: ${res.data}`;
+    } catch (e) {
+      this.status = `提取视频异常: ${JSON.stringify(e)}`;
+    }
+  }
+
+  async extractAudio(): Promise<void> {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('bbb_rabbit_30s.mp4');
+      const dst = `${ctx.filesDir}/output.aac`;
+      this.status = 'M4.4 提取音频中…';
+      const res = native.extractMedia(src, dst, 'audio');
+      this.status = res.ok ? `提取完成: ${res.data}` : `提取失败: ${res.data}`;
+    } catch (e) {
+      this.status = `提取异常: ${JSON.stringify(e)}`;
     }
   }
 

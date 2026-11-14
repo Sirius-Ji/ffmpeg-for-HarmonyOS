@@ -15,6 +15,8 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <multimedia/player_framework/native_avcapability.h>
+#include <multimedia/player_framework/native_avcodec_base.h>
 #include <libavcodec/bsf.h>
 #include <libavutil/opt.h>
 #include <libavutil/channel_layout.h>
@@ -67,7 +69,8 @@ void ScaleToNv12(const AVFrame *src, AVFrame *dst) {
     }
 }
 static int MuxTsThenMp4(std::vector<OutPkt> &packets, AVCodecContext *venc,
-                        AVCodecContext *aenc, const std::string &dstPath) {
+                        AVCodecContext *aenc, const std::string &dstPath,
+                        const std::string &container) {
     const std::string tsPath = dstPath + ".ts";
     AVFormatContext *ts = nullptr;
     if (avformat_alloc_output_context2(&ts, nullptr, "mpegts", tsPath.c_str()) < 0) return -1;
@@ -139,7 +142,7 @@ static int MuxTsThenMp4(std::vector<OutPkt> &packets, AVCodecContext *venc,
     AVFormatContext *in = nullptr, *out = nullptr;
     if (avformat_open_input(&in, tsPath.c_str(), nullptr, nullptr) < 0) return -3;
     if (avformat_find_stream_info(in, nullptr) < 0) { avformat_close_input(&in); return -4; }
-    if (avformat_alloc_output_context2(&out, nullptr, "mp4", dstPath.c_str()) < 0) {
+    if (avformat_alloc_output_context2(&out, nullptr, container.c_str(), dstPath.c_str()) < 0) {
         avformat_close_input(&in); return -5;
     }
     int vmap[8], amap[8];
@@ -190,9 +193,12 @@ std::string VideoTranscodeStatusJson() {
     return gStatusJson;
 }
 
-int VideoTranscodeToMp4(const std::string &srcPath, const std::string &dstPath,
-                        std::string *result) {
+int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
+                   const std::string &format, std::string *result) {
     SetStatus(1, "{\"state\":1}");
+    const bool hevc = (format == "hevc" || format == "h265");
+    const bool flv = (format == "flv");
+    const std::string container = (format == "mkv") ? "matroska" : (flv ? "flv" : "mp4");
     OH_LOG_INFO(LOG_APP, "[vtrans] stage=0 start");
     AVFormatContext *in = nullptr, *out = nullptr;
     AVCodecContext *vdec = nullptr, *venc = nullptr, *adec = nullptr, *aenc = nullptr;
@@ -203,6 +209,20 @@ int VideoTranscodeToMp4(const std::string &srcPath, const std::string &dstPath,
     std::vector<float> pcm;
     int frames = 0, vpackets = 0, apackets = 0;
     int failed = 0;
+    if (hevc) {
+        OH_AVCapability *hw = OH_AVCodec_GetCapabilityByCategory(
+            OH_AVCODEC_MIMETYPE_VIDEO_HEVC, true, HARDWARE);
+        OH_AVCapability *sw = OH_AVCodec_GetCapabilityByCategory(
+            OH_AVCODEC_MIMETYPE_VIDEO_HEVC, true, SOFTWARE);
+        OH_LOG_INFO(LOG_APP, "[vtrans] hevc encoder hw=%{public}p sw=%{public}p hwName=%{public}s swName=%{public}s",
+                    hw, sw, hw ? OH_AVCapability_GetName(hw) : "null",
+                    sw ? OH_AVCapability_GetName(sw) : "null");
+        if (!hw && !sw) {
+            SetStatus(3, "{\"state\":3,\"code\":\"E_NOT_SUPPORTED\"}");
+            if (result) *result = "{\"state\":3,\"code\":\"E_NOT_SUPPORTED\",\"message\":\"HEVC encoder not supported\"}";
+            return -1;
+        }
+    }
 
     try {
         if (avformat_open_input(&in, srcPath.c_str(), nullptr, nullptr) != 0) failed = 1;
@@ -318,7 +338,7 @@ int VideoTranscodeToMp4(const std::string &srcPath, const std::string &dstPath,
             vdec = avcodec_alloc_context3(d);
             if (!d || !vdec || avcodec_parameters_to_context(vdec, par) < 0 ||
                 avcodec_open2(vdec, d, nullptr) < 0) failed = 3;
-            const AVCodec *e = avcodec_find_encoder_by_name("h264_ohcodec");
+            const AVCodec *e = avcodec_find_encoder_by_name(hevc ? "hevc_ohcodec" : "h264_ohcodec");
             if (!failed && !e) failed = 4;
             if (!failed) {
                 venc = avcodec_alloc_context3(e);
@@ -405,7 +425,7 @@ int VideoTranscodeToMp4(const std::string &srcPath, const std::string &dstPath,
         // 手写 AVCC 极易在海思芯片上引发随机花屏，故采用 TS 中转 + FFmpeg 原生 remux。
         // ---- two-stage mux: AnnexB -> MPEG-TS -> MP4 remux ----
         if (!failed) {
-            if (MuxTsThenMp4(packets, venc, aenc, dstPath) != 0) failed = 11;
+            if (MuxTsThenMp4(packets, venc, aenc, dstPath, container) != 0) failed = 11;
         }
         if (out) {
             if (out->pb) avio_closep(&out->pb);

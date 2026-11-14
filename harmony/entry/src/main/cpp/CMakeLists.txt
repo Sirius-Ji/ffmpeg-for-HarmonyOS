@@ -52,6 +52,7 @@ add_library(entry SHARED
     video_probe.cpp
     video_player.cpp
     video_transcode.cpp
+    extract_media.cpp
     ohcodec_decoder.cpp)
 
 target_include_directories(entry PRIVATE ${NATIVE_ROOT})
