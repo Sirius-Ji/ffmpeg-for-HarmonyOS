@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <sstream>
@@ -370,6 +371,20 @@ int VideoTranscodeToMp4(const std::string &srcPath, const std::string &dstPath,
         if (!failed) {
             OH_LOG_INFO(LOG_APP, "[vtrans] stage=10 mux packets=%{public}d", (int)packets.size());
             // OH 编码器输出 AnnexB；mp4 需要 AVCC + avcC extradata
+            // 诊断：把编码器原始 AnnexB 包原封不动写成 .h264，隔离封装器
+            FILE *raw = fopen((dstPath + ".h264").c_str(), "wb");
+            if (raw) {
+                size_t rawBytes = 0;
+                for (auto &p : packets) {
+                    if (p.stream == 0 && p.pkt && p.pkt->size > 0) {
+                        fwrite(p.pkt->data, 1, (size_t)p.pkt->size, raw);
+                        rawBytes += (size_t)p.pkt->size;
+                    }
+                }
+                fclose(raw);
+                OH_LOG_INFO(LOG_APP, "[vtrans] raw h264=%{public}zu dst=%{public}s",
+                            rawBytes, (dstPath + ".h264").c_str());
+            }
             std::vector<uint8_t> sps, pps;
             for (auto &p : packets) {
                 if (p.stream == 0) AnnexBToAvcc(p.pkt, sps, pps);
