@@ -6,6 +6,9 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <set>
+#include <algorithm>
+#include <cstdlib>
 #include <thread>
 #include <vector>
 
@@ -200,7 +203,6 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, AV_PIXEL_FORMAT_NV12);
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_FRAME_RATE, fps);
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_ENABLE_SYNC_MODE, 1);
-        // B 帧重排必须关低延迟：低延迟模式按解码序输出且可能丢弃不完整帧
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 0);
 
         OH_AVErrCode rc = OH_VideoDecoder_Configure(codec, format);
@@ -239,6 +241,15 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
         int pushed = 0;
         int rendered = 0;
         int outSeen = 0;
+
+        struct PacketMeta {
+            int64_t ptsUs;
+            int64_t dtsUs;
+            int flags;
+            int size;
+        };
+        std::vector<PacketMeta> inMeta;
+        std::vector<int64_t> outPts;
         int audioMsAtStart = audioActive ? (int)audio->PlayedMs() : -1;
         bool firstFrame = true;
 
@@ -303,6 +314,11 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
                             OH_AVBuffer_SetBufferAttr(buf, &attr);
                             if (OH_VideoDecoder_PushInputBuffer(codec, inIdx) == AV_ERR_OK) {
                                 if (firstPtsUs < 0) firstPtsUs = ptsUs;
+                                const int64_t dtsUs =
+                                    (pkt->dts != AV_NOPTS_VALUE)
+                                        ? av_rescale_q(pkt->dts, st->time_base, AV_TIME_BASE_Q)
+                                        : AV_NOPTS_VALUE;
+                                inMeta.push_back({ptsUs, dtsUs, pkt->flags, pkt->size});
                                 pushed++;
                                 firstFrame = false;
                             }
@@ -342,6 +358,7 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
                     ptsUs = (firstPtsUs >= 0 ? firstPtsUs : 0) +
                             (int64_t)rendered * 1000000 / fps;
                 }
+                outPts.push_back(ptsUs);
 
                 if (audioActive && audio) {
                     const int64_t videoMs =
@@ -395,6 +412,68 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
 
             if (eosSent && !havePkt && (NowMs() - lastOutMs) > 2000) break;
         }
+
+        std::set<int64_t> outSet(outPts.begin(), outPts.end());
+        int missing = 0;
+        int nonDisplay = 0;
+        int discarded = 0;
+        std::vector<int64_t> missingPts;
+        for (const auto &m : inMeta) {
+            if (outSet.find(m.ptsUs) == outSet.end()) {
+                missingPts.push_back(m.ptsUs);
+                missing++;
+                if ((m.flags & AV_PKT_FLAG_DISCARD) != 0) {
+                    discarded++;
+                    nonDisplay++;
+                }
+                if (missing <= 10) {
+                    OH_LOG_INFO(LOG_APP,
+                                "[vplay] missing#%{public}d ptsUs=%{public}lld dtsUs=%{public}lld "
+                                "flags=0x%{public}x size=%{public}d",
+                                missing, (long long)m.ptsUs, (long long)m.dtsUs,
+                                (unsigned)m.flags, m.size);
+                }
+            }
+        }
+        std::vector<int64_t> sortedOut = outPts;
+        std::sort(sortedOut.begin(), sortedOut.end());
+        int softMissing = 0;
+        for (int64_t mp : missingPts) {
+            auto it = std::lower_bound(sortedOut.begin(), sortedOut.end(), mp);
+            int64_t best = INT64_MAX;
+            int64_t bestVal = -1;
+            if (it != sortedOut.end()) {
+                best = std::llabs(*it - mp);
+                bestVal = *it;
+            }
+            if (it != sortedOut.begin()) {
+                auto prev = it - 1;
+                int64_t d = std::llabs(*prev - mp);
+                if (d < best) {
+                    best = d;
+                    bestVal = *prev;
+                }
+            }
+            if (best <= 2) softMissing++;
+            OH_LOG_INFO(LOG_APP,
+                        "[vplay] missingNearest ptsUs=%{public}lld nearestOut=%{public}lld diff=%{public}lld",
+                        (long long)mp, (long long)bestVal, (long long)best);
+        }
+        OH_LOG_INFO(LOG_APP, "[vplay] missingSoft(<=2us)=%{public}d", softMissing);
+
+        for (size_t i = (inMeta.size() > 5 ? inMeta.size() - 5 : 0); i < inMeta.size(); ++i) {
+            OH_LOG_INFO(LOG_APP,
+                        "[vplay] tailIn ptsUs=%{public}lld dtsUs=%{public}lld flags=0x%{public}x size=%{public}d",
+                        (long long)inMeta[i].ptsUs, (long long)inMeta[i].dtsUs,
+                        (unsigned)inMeta[i].flags, inMeta[i].size);
+        }
+        for (size_t i = (outPts.size() > 5 ? outPts.size() - 5 : 0); i < outPts.size(); ++i) {
+            OH_LOG_INFO(LOG_APP, "[vplay] tailOut ptsUs=%{public}lld", (long long)outPts[i]);
+        }
+        OH_LOG_INFO(LOG_APP,
+                    "[vplay] audit packets=%{public}d outputs=%{public}d missing=%{public}d "
+                    "nonDisplay=%{public}d discarded=%{public}d",
+                    (int)inMeta.size(), (int)outPts.size(), missing, nonDisplay, discarded);
 
         OH_LOG_INFO(LOG_APP,
                     "[vplay] done pushed=%{public}d rendered=%{public}d dropped=%{public}d "
