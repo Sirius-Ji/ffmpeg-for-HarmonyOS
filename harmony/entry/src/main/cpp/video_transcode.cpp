@@ -447,12 +447,14 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                 avcodec_open2(vdec, d, nullptr) < 0) failed = 3;
             const AVCodec *e = avcodec_find_encoder_by_name(hevc ? "hevc_ohcodec" : "h264_ohcodec");
             if (!failed && !e) failed = 4;
+            AVRational srcRate = in->streams[vidx]->avg_frame_rate;
+            if (srcRate.num <= 0 || srcRate.den <= 0) srcRate = AVRational{24, 1};
             if (!failed) {
                 venc = avcodec_alloc_context3(e);
                 venc->width = outW;
                 venc->height = outH;
-                venc->time_base = AVRational{1, 24};
-                venc->framerate = AVRational{24, 1};
+                venc->time_base = AVRational{srcRate.den, srcRate.num};
+                venc->framerate = srcRate;
                 venc->pix_fmt = AV_PIX_FMT_NV12;
                 venc->bit_rate = (outW >= 1920) ? 8000000 : 4000000;
                 venc->gop_size = 48;
@@ -473,6 +475,7 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
             }
             if (!failed) {
                 pkt = av_packet_alloc();
+                const AVRational outTb = AVRational{srcRate.den, srcRate.num};
                 WatermarkFilter wm;
                 const bool wmOk = watermark && wm.Init(wmText, wmPosition, wmFontSize, wmColor, fontPath, wmAlpha, wmBold, outW, outH);
                 if (watermark)
@@ -508,8 +511,8 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                                         op.pkt->pts = stamp;
                                         op.pkt->dts = stamp;
                                     }
-                                    op.when = stamp / 24.0;
-                                    op.tb = AVRational{1, 24};
+                                    op.when = stamp * av_q2d(outTb);
+                                    op.tb = outTb;
                                     if ((vpackets % 24) == 0) {
                                         OH_LOG_INFO(LOG_APP, "[vtrans] pkt=%{public}d pts=%{public}lld dts=%{public}lld size=%{public}d",
                                                     vpackets, (long long)pkt->pts, (long long)pkt->dts,
@@ -536,8 +539,8 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                         op.pkt->pts = stamp;
                         op.pkt->dts = stamp;
                     }
-                    op.when = stamp / 24.0;
-                    op.tb = AVRational{1, 24};
+                    op.when = stamp * av_q2d(outTb);
+                    op.tb = outTb;
                     packets.push_back(op);
                     vpackets++;
                     av_packet_unref(pkt);
