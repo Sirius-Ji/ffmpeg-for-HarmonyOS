@@ -28,7 +28,7 @@ README = os.path.join(ROOT, "README.md")
 # v0.1.1 发布能力（与 build/build-ffmpeg.sh 的白名单一致）
 REQUIRED = {
     "decoder": [
-        "h264_oh", "hevc_oh",
+        "h264_oh", "hevc_oh", "h264", "hevc",
         "aac", "ac3", "eac3", "alac", "ape", "dca", "flac", "mp3", "mp3float",
         "opus", "pcm_s16le", "pcm_s24le", "pcm_s32le", "wmav2",
     ],

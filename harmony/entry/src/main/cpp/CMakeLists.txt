@@ -49,6 +49,7 @@ add_library(entry SHARED
     audio_player.cpp
     transcoder.cpp
     hardware_probe.cpp
+    video_probe.cpp
     ohcodec_decoder.cpp)
 
 target_include_directories(entry PRIVATE ${NATIVE_ROOT})
@@ -62,6 +63,8 @@ target_link_libraries(entry PUBLIC
     libnative_media_acodec.so
     libnative_media_codecbase.so
     libnative_media_core.so
+    # M4.0 视频探针：VideoDecoder（H.264/H.265 capability + CreateByMime）
+    libnative_media_vdec.so
     ff_avformat
     ff_avcodec
     ff_avutil

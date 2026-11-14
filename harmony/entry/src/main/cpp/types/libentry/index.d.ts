@@ -27,6 +27,8 @@ declare const native: {
   transcodeByPath: (srcPath: string, dstPath: string, format: string, bitrateKbps?: number) => NapiResult;
   // M3.0 探针：查系统硬解对 AAC/MP3/FLAC 的能力
   hardwareProbe: () => NapiResult;
+  // M4.0 探针：查系统硬解对 H.264/H.265 的能力、最大分辨率与可创建性
+  videoProbe: () => NapiResult;
   // M3.1 硬解开关（A/B 对比用），影响下一次 Open
   decoderSetHardware: (on: boolean) => NapiResult;
 };

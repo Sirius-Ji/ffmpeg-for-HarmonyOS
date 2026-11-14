@@ -92,6 +92,13 @@ struct Index {
           this.runHardwareProbe();
         })
 
+      Button('M4.0 视频探针（H.264/H.265）')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => {
+          this.runVideoProbe();
+        })
+
       Button(this.hardwareOn ? '硬解开关：开（AAC）' : '硬解开关：关（走软解）')
         .fontSize(13)
         .onClick(() => {
@@ -399,6 +406,19 @@ struct Index {
     } catch (e) {
       this.status = `探针异常: ${JSON.stringify(e)}`;
       hilog.error(DOMAIN, TAG, 'hardwareProbe failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  // M4.0：探测系统视频硬解（H.264/H.265 capability、最大分辨率、能否创建解码器）
+  runVideoProbe(): void {
+    try {
+      const res = native.videoProbe();
+      this.status = res.ok ? `视频探针完成：${res.data}` : `视频探针失败: ${res.data}`;
+      this.logText = res.ok ? res.data : res.data;
+      hilog.info(DOMAIN, TAG, 'videoProbe ok=%{public}s', String(res.ok));
+    } catch (e) {
+      this.status = `视频探针异常: ${JSON.stringify(e)}`;
+      hilog.error(DOMAIN, TAG, 'videoProbe failed: %{public}s', JSON.stringify(e));
     }
   }
 

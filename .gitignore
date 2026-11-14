@@ -67,3 +67,6 @@ __pycache__/
 # Local signing config (DevEco writes absolute paths + encrypted passwords)
 harmony/build-profile.json5
 !harmony/build-profile.json5.example
+
+# Local generated test videos (rebuild via test/gen_video.sh)
+test/*.mp4

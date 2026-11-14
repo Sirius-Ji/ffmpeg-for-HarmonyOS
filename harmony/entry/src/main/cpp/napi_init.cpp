@@ -16,6 +16,7 @@
 #include "audio_player.h"
 #include "decoder.h"
 #include "hardware_probe.h"
+#include "video_probe.h"
 #include "transcoder.h"
 
 #undef LOG_DOMAIN
@@ -321,6 +322,14 @@ napi_value HardwareProbeFn(napi_env env, napi_callback_info /*info*/) {
     return MakeResult(env, true, json);
 }
 
+// M4.0 探针：系统 OH_VideoDecoder 对 H.264/H.265 的能力、最大分辨率与可创建性
+napi_value VideoProbeFn(napi_env env, napi_callback_info /*info*/) {
+    std::string json;
+    if (VideoProbe(&json) != 0) return ResultError(env, "videoProbe failed");
+    OH_LOG_INFO(LOG_APP, "[vprobe] json=%{public}s", json.c_str());
+    return MakeResult(env, true, json);
+}
+
 // M3.1：硬解开关（A/B 对比用），影响下一次 Open
 napi_value DecoderSetHardwareFn(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -384,6 +393,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"transcodeTo", nullptr, TranscodeToFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"transcodeByPath", nullptr, TranscodeByPathFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"hardwareProbe", nullptr, HardwareProbeFn, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"videoProbe", nullptr, VideoProbeFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"decoderSetHardware", nullptr, DecoderSetHardwareFn, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
