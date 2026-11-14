@@ -149,6 +149,7 @@ struct AsyncCtx {
     int renderFail = 0;
     int stride = 0;
     int sliceHeight = 0;
+    int64_t wallStartMs = 0;
     int width = 0;
     int height = 0;
 };
@@ -278,6 +279,33 @@ void OnNewOutputCb(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void 
         if (!ctx->window) {
             ctx->renderFail++;
         } else {
+            // Buffer 模式没有合成器按时间戳卡点：必须自己按音频主时钟节拍。
+            // 超前就 sleep，落后 >50ms 直接丢帧。
+            if (ctx->wallStartMs == 0) ctx->wallStartMs = NowMs() - videoMs;
+            int64_t diff = 0;
+            if (ctx->audioActive && ctx->audio && audioMs >= 0) {
+                diff = videoMs - audioMs;
+                if (diff < -50) {
+                    ctx->dropped++;
+                    OH_VideoDecoder_FreeOutputBuffer(codec, index);
+                    return;
+                }
+                while (diff > 0 && !ctx->ctl->stop.load()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    const int64_t a = ctx->audio->PlayedMs();
+                    if (a >= 0) diff = videoMs - a;
+                    else break;
+                }
+            } else {
+                const int64_t target = ctx->wallStartMs + videoMs;
+                while (NowMs() < target && !ctx->ctl->stop.load()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                }
+            }
+            if (ctx->ctl->stop.load()) {
+                OH_VideoDecoder_FreeOutputBuffer(codec, index);
+                return;
+            }
             // 首次输出时读取解码器实际 stride / sliceHeight
             if (ctx->stride <= 0) {
                 OH_AVFormat *desc = OH_VideoDecoder_GetOutputDescription(codec);
