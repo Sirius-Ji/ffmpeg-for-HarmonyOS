@@ -106,16 +106,15 @@ static bool AnnexBToAvcc(AVPacket *&pkt, std::vector<uint8_t> &sps, std::vector<
         const int ne = NextStart(d, n, ns);
         if (ne <= ns) break;
         const int type = d[ns] & 0x1f;
-        if (type == 7) sps.assign(d + ns, d + ne);
-        else if (type == 8) pps.assign(d + ns, d + ne);
-        else {
-            const uint32_t len = (uint32_t)(ne - ns);
-            out.push_back((uint8_t)(len >> 24));
-            out.push_back((uint8_t)(len >> 16));
-            out.push_back((uint8_t)(len >> 8));
-            out.push_back((uint8_t)len);
-            out.insert(out.end(), d + ns, d + ne);
-        }
+        if (type == 7 && sps.empty()) sps.assign(d + ns, d + ne);
+        else if (type == 8 && pps.empty()) pps.assign(d + ns, d + ne);
+        // 参数集不再剥离：以 4 字节长度内联进样本，尾部/IDR 不会缺 SPS/PPS
+        const uint32_t len = (uint32_t)(ne - ns);
+        out.push_back((uint8_t)(len >> 24));
+        out.push_back((uint8_t)(len >> 16));
+        out.push_back((uint8_t)(len >> 8));
+        out.push_back((uint8_t)len);
+        out.insert(out.end(), d + ns, d + ne);
         i = ne;
     }
     if (out.empty()) return false;
