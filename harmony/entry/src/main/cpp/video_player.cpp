@@ -198,7 +198,10 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_WIDTH, width);
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_HEIGHT, height);
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, AV_PIXEL_FORMAT_NV12);
+        OH_AVFormat_SetIntValue(format, OH_MD_KEY_FRAME_RATE, fps);
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_ENABLE_SYNC_MODE, 1);
+        // B 帧重排必须关低延迟：低延迟模式按解码序输出且可能丢弃不完整帧
+        OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 0);
 
         OH_AVErrCode rc = OH_VideoDecoder_Configure(codec, format);
         OH_AVFormat_Destroy(format);
@@ -390,7 +393,7 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
                 }
             }
 
-            if (eosSent && !havePkt && (NowMs() - lastOutMs) > 400) break;
+            if (eosSent && !havePkt && (NowMs() - lastOutMs) > 2000) break;
         }
 
         OH_LOG_INFO(LOG_APP,
