@@ -231,7 +231,8 @@ int TranscodeAudio(int srcFd, int dstFd, const std::string &format, int bitrateK
     const int wantRate = prof.targetRate > 0 ? prof.targetRate : c.dec->sample_rate;
     const int gotRate = PickSampleRate(c.enc, encCodec, wantRate);
     c.enc->sample_rate = gotRate;
-    av_channel_layout_default(&c.enc->ch_layout, kOutChannels);
+    const int outChannels = c.dec->ch_layout.nb_channels >= 2 ? 2 : 1;
+    av_channel_layout_default(&c.enc->ch_layout, outChannels);
     c.enc->sample_fmt = PickSampleFormat(c.enc, encCodec);
     if (prof.bitrate > 0) c.enc->bit_rate = prof.bitrate;
     c.enc->time_base = AVRational{1, gotRate};
@@ -345,7 +346,7 @@ int TranscodeAudio(int srcFd, int dstFd, const std::string &format, int bitrateK
             const int take = (n - off) < room ? (n - off) : room;
             const int r = av_samples_copy(c.staging->extended_data,
                                           const_cast<uint8_t *const *>(data), pending, off, take,
-                                          kOutChannels, (AVSampleFormat)c.enc->sample_fmt);
+                                          c.enc->ch_layout.nb_channels, (AVSampleFormat)c.enc->sample_fmt);
             if (r < 0) return r;
             pending += take;
             off += take;
@@ -447,7 +448,7 @@ int TranscodeAudio(int srcFd, int dstFd, const std::string &format, int bitrateK
        << ",\"channels\":" << c.dec->ch_layout.nb_channels << "}"
        << ",\"output\":{\"format\":\"" << prof.name << "\",\"codec\":\"" << encCodec->name
        << "\",\"container\":\"" << prof.container << "\",\"sampleRate\":" << c.enc->sample_rate
-       << ",\"channels\":" << kOutChannels << ",\"bitRate\":" << prof.bitrate << "}"
+       << ",\"channels\":" << outChannels << ",\"bitRate\":" << prof.bitrate << "}"
        << ",\"decodedFrames\":" << decodedFrames << ",\"outFrames\":" << totalFrames
        << ",\"packets\":" << totalPackets << ",\"bytes\":" << bytes
        << ",\"durationMs\":" << durationMs << "}";
@@ -456,7 +457,7 @@ int TranscodeAudio(int srcFd, int dstFd, const std::string &format, int bitrateK
     OH_LOG_INFO(LOG_APP,
                 "[transcode] done format=%{public}s codec=%{public}s in=%{public}d/%{public}d out=%{public}d/%{public}d bytes=%{public}lld frames=%{public}lld",
                 prof.name, encCodec->name, c.dec->sample_rate, c.dec->ch_layout.nb_channels,
-                c.enc->sample_rate, kOutChannels, (long long)bytes, (long long)totalFrames);
+                c.enc->sample_rate, outChannels, (long long)bytes, (long long)totalFrames);
     return 0;
 }
 
