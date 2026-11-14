@@ -146,6 +146,13 @@ struct Index {
           this.playVideo(false, true);
         })
 
+      Button('M4.3 视频转码 → MP4')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => {
+          this.transcodeVideo();
+        })
+
       Button('停止视频')
         .fontSize(13)
         .onClick(() => {
@@ -475,6 +482,33 @@ struct Index {
     } catch (e) {
       this.status = `视频播放异常: ${JSON.stringify(e)}`;
       hilog.error(DOMAIN, TAG, 'videoPlay failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
+  async transcodeVideo(): Promise<void> {
+    if (this.surfaceId.length === 0) { this.status = 'Surface 未就绪'; return; }
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('bbb_rabbit_30s.mp4');
+      const dst = `${ctx.filesDir}/output.mp4`;
+      this.status = 'M4.3 转码中…';
+      native.videoTranscodeToMp4(src, dst);
+      for (let i = 0; i < 240; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
+        const s = JSON.parse(native.videoTranscodeStatus().data) as Record<string, number>;
+        if (s.state === 2) {
+          this.status = `转码完成 ${s.size} bytes，播放 output.mp4`;
+          native.videoPlay(dst, this.surfaceId, false, false);
+          return;
+        }
+        if (s.state === 3) {
+          this.status = `转码失败 stage=${s.stage}`;
+          return;
+        }
+      }
+      this.status = '转码超时';
+    } catch (e) {
+      this.status = `转码异常: ${JSON.stringify(e)}`;
     }
   }
 

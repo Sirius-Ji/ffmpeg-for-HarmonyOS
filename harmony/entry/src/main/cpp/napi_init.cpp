@@ -18,6 +18,7 @@
 #include "hardware_probe.h"
 #include "video_probe.h"
 #include "video_player.h"
+#include "video_transcode.h"
 #include "transcoder.h"
 
 #undef LOG_DOMAIN
@@ -350,9 +351,27 @@ napi_value VideoPlayFn(napi_env env, napi_callback_info info) {
     return MakeResult(env, true, json);
 }
 
+napi_value VideoTranscodeStatusFn(napi_env env, napi_callback_info /*info*/) {
+    return MakeResult(env, true, VideoTranscodeStatusJson());
+}
+
 napi_value VideoStopFn(napi_env env, napi_callback_info /*info*/) {
     VideoStop();
     return MakeResult(env, true, "{\"state\":\"stopped\"}");
+}
+
+napi_value VideoTranscodeToMp4Fn(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 2) return ResultError(env, "videoTranscodeToMp4(src,dst): missing args");
+    const std::string src = GetString(env, argv[0]);
+    const std::string dst = GetString(env, argv[1]);
+    std::thread([src, dst]() {
+        std::string json;
+        VideoTranscodeToMp4(src, dst, &json);
+    }).detach();
+    return MakeResult(env, true, "{\"state\":\"started\",\"diagnostic\":\"video-only\"}");
 }
 
 napi_value SetVolumeFn(napi_env env, napi_callback_info info) {
@@ -434,6 +453,8 @@ napi_value Init(napi_env env, napi_value exports) {
         {"videoProbe", nullptr, VideoProbeFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"videoPlay", nullptr, VideoPlayFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"videoStop", nullptr, VideoStopFn, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"videoTranscodeToMp4", nullptr, VideoTranscodeToMp4Fn, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"videoTranscodeStatus", nullptr, VideoTranscodeStatusFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setVolume", nullptr, SetVolumeFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"decoderSetHardware", nullptr, DecoderSetHardwareFn, nullptr, nullptr, nullptr, napi_default, nullptr},
     };

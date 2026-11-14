@@ -135,6 +135,7 @@ struct AsyncCtx {
     std::shared_ptr<PlaybackCtx> ctl;
     std::shared_ptr<AudioPlayer> audio;
     bool audioActive = false;
+    bool audioStarted = false;
     bool bufferMode = false;
     bool cropMode = false;
     OHNativeWindow *window = nullptr;
@@ -229,6 +230,15 @@ void OnNeedInputCb(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void 
     if (!ctx || !buffer) return;
     std::lock_guard<std::mutex> lock(ctx->mtx);
     if (ctx->eosSent) return;
+    // 输入水位：最多领先音频 300ms，避免高码率转码片把解码器灌爆
+    if (!ctx->queue.empty() && ctx->audioStarted && ctx->audio && ctx->firstPtsUs >= 0) {
+        const int64_t pktMs = (ctx->queue.front().ptsUs - ctx->firstPtsUs) / 1000;
+        while (!ctx->ctl->stop.load()) {
+            const int64_t a = ctx->audio->PlayedMs();
+            if (a < 0 || pktMs - a <= 300) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
     if (ctx->queue.empty()) {
         OH_AVCodecBufferAttr attr{};
         attr.flags = AVCODEC_BUFFER_FLAGS_EOS;
@@ -268,10 +278,15 @@ void OnNewOutputCb(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void 
     if (OH_AVBuffer_GetBufferAttr(buffer, &attr) == AV_ERR_OK) ptsUs = attr.pts;
     const int64_t videoMs =
         (ptsUs - (ctx->firstPtsUs >= 0 ? ctx->firstPtsUs : 0)) / 1000;
+    // 视频优先：首帧输出时才启动音频，避免启动阶段音频跑在前面
+    if (ctx->audioActive && !ctx->audioStarted && ctx->audio) {
+        ctx->audio->Play();
+        ctx->audioStarted = true;
+    }
     int64_t audioMs = -1;
-    if (ctx->audioActive && ctx->audio) audioMs = ctx->audio->PlayedMs();
+    if (ctx->audioActive && ctx->audioStarted && ctx->audio) audioMs = ctx->audio->PlayedMs();
 
-    if (ctx->audioActive && audioMs >= 0 && videoMs - audioMs < -80) {
+    if (ctx->audioActive && ctx->audioStarted && audioMs >= 0 && videoMs - audioMs < -80) {
         ctx->dropped++;
         OH_VideoDecoder_FreeOutputBuffer(codec, index);
         return;
@@ -285,7 +300,7 @@ void OnNewOutputCb(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void 
             // 超前就 sleep，落后 >50ms 直接丢帧。
             if (ctx->wallStartMs == 0) ctx->wallStartMs = NowMs() - videoMs;
             int64_t diff = 0;
-            if (ctx->audioActive && ctx->audio && audioMs >= 0) {
+            if (ctx->audioActive && ctx->audioStarted && ctx->audio && audioMs >= 0) {
                 diff = videoMs - audioMs;
                 if (diff < -50) {
                     ctx->dropped++;
@@ -322,7 +337,7 @@ void OnNewOutputCb(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void 
                 ctx->renderFail++;
             }
             int64_t targetNs = NowNs();
-            if (ctx->audioActive && audioMs >= 0 && videoMs > audioMs) {
+            if (ctx->audioActive && ctx->audioStarted && audioMs >= 0 && videoMs > audioMs) {
                 targetNs += (videoMs - audioMs) * 1000000;
             }
             (void)targetNs;
@@ -334,6 +349,14 @@ void OnNewOutputCb(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void 
         }
         OH_AVErrCode rc = OH_VideoDecoder_RenderOutputBufferAtTime(codec, index, targetNs);
         if (rc != AV_ERR_OK) OH_VideoDecoder_RenderOutputBuffer(codec, index);
+        // Surface 模式：RenderOutputBuffer 已把 buffer 交给合成器，不能再 Free（双重归还）
+        OH_VideoDecoder_FreeOutputBuffer(codec, index);
+        ctx->rendered++;
+        ctx->lastOutMs = NowMs();
+        if (ctx->rendered == 1) {
+            OH_LOG_INFO(LOG_APP, "[vbuf] first output audioMs=%{public}lld", (long long)audioMs);
+        }
+        return;
     }
     OH_VideoDecoder_FreeOutputBuffer(codec, index);
     ctx->rendered++;
@@ -468,7 +491,6 @@ int VideoPlay(const std::string &path, const std::string &surfaceId, bool buffer
 
         auto audio = std::make_shared<AudioPlayer>();
         bool audioOk = audio->Open(path) == 0;
-        if (audioOk) audioOk = audio->Play() == 0;
         if (!audioOk) OH_LOG_WARN(LOG_APP, "[vbuf] no audio track");
         if (audioOk) audio->SetVolume(gVolume.load());
 

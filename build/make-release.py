@@ -31,7 +31,7 @@ LIB_RE = re.compile(r"^lib(%s)\.so\.(\d+)$" % "|".join(LIB_NAMES))
 
 COMPONENTS = {
     "decoders": "aac ac3 eac3 alac ape dca flac mp3 mp3float opus pcm_s16le pcm_s24le pcm_s32le wmav2 h264_oh hevc_oh h264 hevc",
-    "encoders": "aac alac flac libmp3lame opus pcm_s16le pcm_s24le",
+    "encoders": "aac alac flac libmp3lame opus pcm_s16le pcm_s24le h264_oh",
     "muxers": "mp4 mov ipod mp3 flac wav matroska adts ogg opus",
     "demuxers": "mov matroska ogg flac ape dsf wav mp3 aac tta wv caf asf",
     "bsf": "aac_adtstoasc",
