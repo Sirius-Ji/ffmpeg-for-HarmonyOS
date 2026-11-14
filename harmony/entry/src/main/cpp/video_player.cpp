@@ -47,6 +47,7 @@ struct PlaybackCtx {
 };
 std::shared_ptr<PlaybackCtx> gCtx;
 std::weak_ptr<AudioPlayer> gVideoAudio;
+std::atomic<float> gVolume{1.0f};
 
 int64_t NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -469,6 +470,7 @@ int VideoPlay(const std::string &path, const std::string &surfaceId, bool buffer
         bool audioOk = audio->Open(path) == 0;
         if (audioOk) audioOk = audio->Play() == 0;
         if (!audioOk) OH_LOG_WARN(LOG_APP, "[vbuf] no audio track");
+        if (audioOk) audio->SetVolume(gVolume.load());
 
         auto ctx = std::make_shared<PlaybackCtx>();
         gCtx = ctx;
@@ -485,6 +487,9 @@ int VideoPlay(const std::string &path, const std::string &surfaceId, bool buffer
 }
 
 void VideoSetVolume(float volume) {
+    if (volume < 0.0f) volume = 0.0f;
+    if (volume > 1.0f) volume = 1.0f;
+    gVolume.store(volume);
     auto a = gVideoAudio.lock();
     if (a) a->SetVolume(volume);
 }

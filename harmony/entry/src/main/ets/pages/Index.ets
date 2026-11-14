@@ -16,7 +16,7 @@ struct Index {
   @State hardwareOn: boolean = true;
   @State copyPercent: number = -1;
   @State surfaceId: string = '';
-  @State volume: number = 0.8;
+  @State volume: number = 1.0;
   private timer: number = -1;
   private videoController: XComponentController = new XComponentController();
 
@@ -25,7 +25,8 @@ struct Index {
   }
 
   build() {
-    Column({ space: 12 }) {
+    Scroll() {
+      Column({ space: 12 }) {
       Text('ffmpeg-for-HarmonyOS · M2 播放自检')
         .fontSize(18)
         .fontWeight(FontWeight.Bold)
@@ -194,7 +195,10 @@ struct Index {
     }
     .padding(16)
     .width('100%')
+    }
+    .width('100%')
     .height('100%')
+    .scrollBar(BarState.Auto)
   }
 
   // 把 rawfile 里的样例拷到应用沙箱，返回真实路径
