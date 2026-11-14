@@ -615,8 +615,25 @@ void AudioPlayer::Release() {
     rendererRate_ = rendererChannels_ = rendererFrameSize_ = 0;
 }
 
-std::string AudioPlayer::StatusJson() const {
-    // 位置用官方口径：渲染器已写帧数，而不是回调次数/字节数
+int64_t AudioPlayer::PlayedMs() const {
+    // 官方时间戳：framePosition 是已呈现帧数，timestamp 是那一帧的单调时钟时刻。
+    // 不要用 realBytes_：它包含渲染器预填缓冲，会把音频时钟虚高 200ms。
+    if (renderer_ == nullptr || state_.load() != 1) return -1;
+    int64_t frames = 0;
+    int64_t tsNs = 0;
+    if (OH_AudioRenderer_GetAudioTimestampInfo(renderer_, &frames, &tsNs) != AUDIOSTREAM_SUCCESS ||
+        tsNs <= 0) {
+        return -1;
+    }
+    const int64_t nowNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch())
+                              .count();
+    const int64_t elapsedNs = nowNs > tsNs ? nowNs - tsNs : 0;
+    frames += elapsedNs * kOutRate / 1000000000LL;
+    return frames * 1000 / kOutRate;
+}
+
+std::string AudioPlayer::StatusJson() const {    // 位置用官方口径：渲染器已写帧数，而不是回调次数/字节数
     int64_t framesWritten = 0;
     if (renderer_ != nullptr) OH_AudioRenderer_GetFramesWritten(renderer_, &framesWritten);
     int64_t positionMs = rendererRate_ > 0 ? framesWritten * 1000 / rendererRate_ : 0;

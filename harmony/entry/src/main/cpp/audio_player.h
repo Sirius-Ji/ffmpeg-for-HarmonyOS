@@ -33,6 +33,10 @@ public:
     std::string StatusJson() const;
     std::string LastError() const;
 
+    // M4.2：音频主时钟（按渲染器实际消费的 PCM 字节换算，单位 ms）
+    int64_t PlayedMs() const;
+    bool IsActive() const { return state_.load() == 1 || running_.load(); }
+
 private:
     static int32_t OnWriteDataCb(OH_AudioRenderer *renderer, void *userData,
                                  void *audioData, int32_t audioDataSize);

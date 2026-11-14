@@ -111,7 +111,7 @@ struct Index {
           this.runVideoProbe();
         })
 
-      Button('M4.1 播放视频（BBB 1080p）')
+      Button('M4.2 播放（BBB 30s · 兔子+音轨）')
         .fontSize(13)
         .enabled(!this.busy)
         .onClick(() => {
@@ -430,15 +430,14 @@ struct Index {
     }
     try {
       const ctx = getContext(this) as common.UIAbilityContext;
-      const name = 'bbb_1080_10s.mp4';
+      const name = 'bbb_rabbit_30s.mp4';
       const path = `${ctx.filesDir}/${name}`;
-      if (!fs.accessSync(path)) {
-        const data = await ctx.resourceManager.getRawFileContent(name);
-        const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
-        fs.writeSync(file.fd, data.buffer as ArrayBuffer);
-        fs.closeSync(file);
-        hilog.info(DOMAIN, TAG, 'video copied to sandbox: %{public}s', path);
-      }
+      // 每次都覆盖，避免换测试片后还在放沙箱里的旧文件
+      const data = await ctx.resourceManager.getRawFileContent(name);
+      const file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      fs.writeSync(file.fd, data.buffer as ArrayBuffer);
+      fs.closeSync(file);
+      hilog.info(DOMAIN, TAG, 'video copied to sandbox: %{public}s', path);
       const res = native.videoPlay(path, this.surfaceId);
       this.status = res.ok ? `视频播放已启动: ${res.data}` : `视频播放失败: ${res.data}`;
       hilog.info(DOMAIN, TAG, 'videoPlay ok=%{public}s', String(res.ok));

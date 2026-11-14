@@ -4,11 +4,14 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
 
 #include <hilog/log.h>
+
+#include "audio_player.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -31,7 +34,12 @@ namespace {
 
 std::mutex gMutex;
 std::thread gThread;
-std::atomic<bool> gStop{false};
+
+struct PlaybackCtx {
+    std::atomic<bool> stop{false};
+};
+
+std::shared_ptr<PlaybackCtx> gCtx;
 
 int64_t NowNs() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -40,6 +48,15 @@ int64_t NowNs() {
 }
 
 int64_t NowMs() { return NowNs() / 1000000; }
+
+bool SleepCheck(const std::shared_ptr<PlaybackCtx> &ctx, int64_t ms) {
+    const int64_t end = NowMs() + ms;
+    while (NowMs() < end) {
+        if (ctx->stop.load()) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return !ctx->stop.load();
+}
 
 void StartCode(std::vector<uint8_t> *out) {
     out->push_back(0);
@@ -54,14 +71,13 @@ std::vector<uint8_t> BuildAnnexBCsd(const uint8_t *ed, int size) {
     if (ed == nullptr || size <= 0) return out;
 
     if (!(size >= 7 && ed[0] == 1)) {
-        // 有些容器直接给 AnnexB
         if (size >= 4 && ed[0] == 0 && ed[1] == 0 && (ed[2] == 1 || (ed[2] == 0 && ed[3] == 1))) {
             out.assign(ed, ed + size);
         }
         return out;
     }
 
-    int pos = 5;  // 跳过 version/profile/compat/level/lengthSize
+    int pos = 5;
     if (pos >= size) return out;
     int numSps = ed[pos++] & 0x1f;
     for (int i = 0; i < numSps && pos + 2 <= size; ++i) {
@@ -91,14 +107,12 @@ int NalLengthSize(const uint8_t *ed, int size) {
     return 4;
 }
 
-// AVCC（4/3/2/1 字节长度前缀）→ AnnexB 起始码；首帧前面补 SPS/PPS。
 std::vector<uint8_t> ToAnnexB(const uint8_t *data, int size, int nalLen,
                               const std::vector<uint8_t> &csd, bool prependCsd) {
     std::vector<uint8_t> out;
     if (prependCsd && !csd.empty()) out = csd;
     if (data == nullptr || size <= 0) return out;
 
-    // 已经是 AnnexB
     if (size >= 4 && data[0] == 0 && data[1] == 0 &&
         (data[2] == 1 || (data[2] == 0 && data[3] == 1))) {
         out.insert(out.end(), data, data + size);
@@ -121,19 +135,19 @@ std::vector<uint8_t> ToAnnexB(const uint8_t *data, int size, int nalLen,
     return out;
 }
 
-void PlaybackThread(std::string path, uint64_t surfaceId) {
+void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<PlaybackCtx> ctx,
+                    std::shared_ptr<AudioPlayer> audio, bool audioActive) {
     AVFormatContext *fmt = nullptr;
     OHNativeWindow *window = nullptr;
     OH_AVCodec *codec = nullptr;
-    AVFormatContext *fmtOwned = nullptr;
     AVPacket *pkt = nullptr;
+    int dropped = 0;
 
     do {
         if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) != 0) {
             OH_LOG_ERROR(LOG_APP, "[vplay] open failed: %{public}s", path.c_str());
             break;
         }
-        fmtOwned = fmt;
         if (avformat_find_stream_info(fmt, nullptr) < 0) {
             OH_LOG_ERROR(LOG_APP, "[vplay] find_stream_info failed");
             break;
@@ -161,8 +175,8 @@ void PlaybackThread(std::string path, uint64_t surfaceId) {
         if (fps <= 0 || fps > 120) fps = 30;
 
         OH_LOG_INFO(LOG_APP,
-                    "[vplay] stream %{public}dx%{public}d fps=%{public}d csd=%{public}zu nalLen=%{public}d",
-                    width, height, fps, csd.size(), nalLen);
+                    "[vplay] stream %{public}dx%{public}d fps=%{public}d csd=%{public}d nalLen=%{public}d audio=%{public}d",
+                    width, height, fps, (int)csd.size(), nalLen, audioActive ? 1 : 0);
 
         int wr = OH_NativeWindow_CreateNativeWindowFromSurfaceId(surfaceId, &window);
         if (wr != 0 || window == nullptr) {
@@ -184,7 +198,6 @@ void PlaybackThread(std::string path, uint64_t surfaceId) {
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_WIDTH, width);
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_HEIGHT, height);
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, AV_PIXEL_FORMAT_NV12);
-        OH_AVFormat_SetIntValue(format, OH_MD_KEY_FRAME_RATE, fps);
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_ENABLE_SYNC_MODE, 1);
 
         OH_AVErrCode rc = OH_VideoDecoder_Configure(codec, format);
@@ -213,6 +226,7 @@ void PlaybackThread(std::string path, uint64_t surfaceId) {
         if (pkt == nullptr) break;
 
         const int64_t baseNs = NowNs();
+        const int64_t fallbackStartMs = NowMs();
         int64_t firstPtsUs = -1;
         int64_t lastOutMs = NowMs();
         const int64_t startMs = lastOutMs;
@@ -221,10 +235,21 @@ void PlaybackThread(std::string path, uint64_t surfaceId) {
         bool eosSent = false;
         int pushed = 0;
         int rendered = 0;
+        int outSeen = 0;
+        int audioMsAtStart = audioActive ? (int)audio->PlayedMs() : -1;
         bool firstFrame = true;
 
-        while (!gStop.load()) {
-            if (NowMs() - startMs > 30000) {
+        // 音频时间戳没就绪时用墙钟兜底，绝不能返回 -1 让输入无限放行
+        auto masterMs = [&]() -> int64_t {
+            if (audioActive && audio) {
+                const int64_t a = audio->PlayedMs();
+                if (a >= 0) return a;
+            }
+            return NowMs() - fallbackStartMs;
+        };
+
+        while (!ctx->stop.load()) {
+            if (NowMs() - startMs > 60000) {
                 OH_LOG_WARN(LOG_APP, "[vplay] timeout guard hit");
                 break;
             }
@@ -243,7 +268,18 @@ void PlaybackThread(std::string path, uint64_t surfaceId) {
             }
 
             if (havePkt) {
-                uint32_t inIdx = 0;
+                // 用音频主时钟限制输入领先量；不 sleep，避免堵住输出回收。
+                bool inputReady = true;
+                if (audioActive && audio && firstPtsUs >= 0 &&
+                    pkt->pts != AV_NOPTS_VALUE) {
+                    const int64_t pktMs =
+                        av_rescale_q(pkt->pts, st->time_base, AV_TIME_BASE_Q) / 1000;
+                    if (pktMs > masterMs() + 300) inputReady = false;
+                }
+                if (!inputReady) {
+                    // 这一轮只收输出，下一轮再看时钟
+                } else {
+                    uint32_t inIdx = 0;
                 if (OH_VideoDecoder_QueryInputBuffer(codec, &inIdx, 0) == AV_ERR_OK) {
                     OH_AVBuffer *buf = OH_VideoDecoder_GetInputBuffer(codec, inIdx);
                     if (buf != nullptr) {
@@ -268,12 +304,13 @@ void PlaybackThread(std::string path, uint64_t surfaceId) {
                                 firstFrame = false;
                             }
                         } else {
-                            OH_LOG_ERROR(LOG_APP, "[vplay] packet %{public}zu > cap %{public}d",
-                                         annex.size(), cap);
+                            OH_LOG_ERROR(LOG_APP, "[vplay] packet %{public}d > cap %{public}d",
+                                         (int)annex.size(), cap);
                         }
                     }
                     av_packet_unref(pkt);
                     havePkt = false;
+                }
                 }
             } else if (eosRead && !eosSent) {
                 uint32_t inIdx = 0;
@@ -290,7 +327,7 @@ void PlaybackThread(std::string path, uint64_t surfaceId) {
             }
 
             uint32_t outIdx = 0;
-            OH_AVErrCode orc = OH_VideoDecoder_QueryOutputBuffer(codec, &outIdx, 5);
+            OH_AVErrCode orc = OH_VideoDecoder_QueryOutputBuffer(codec, &outIdx, 5000);
             if (orc == AV_ERR_OK) {
                 int64_t ptsUs = 0;
                 OH_AVBuffer *ob = OH_VideoDecoder_GetOutputBuffer(codec, outIdx);
@@ -302,31 +339,64 @@ void PlaybackThread(std::string path, uint64_t surfaceId) {
                     ptsUs = (firstPtsUs >= 0 ? firstPtsUs : 0) +
                             (int64_t)rendered * 1000000 / fps;
                 }
-                int64_t deltaNs = 0;
-                if (firstPtsUs >= 0 && ptsUs > firstPtsUs) {
-                    deltaNs = (ptsUs - firstPtsUs) * 1000;
-                }
-                int64_t targetNs = baseNs + deltaNs;
-                if (targetNs < NowNs()) targetNs = NowNs();
-                OH_AVErrCode rr =
-                    OH_VideoDecoder_RenderOutputBufferAtTime(codec, outIdx, targetNs);
-                if (rr != AV_ERR_OK) {
-                    rr = OH_VideoDecoder_RenderOutputBuffer(codec, outIdx);
+
+                if (audioActive && audio) {
+                    const int64_t videoMs =
+                        (ptsUs - (firstPtsUs >= 0 ? firstPtsUs : 0)) / 1000;
+                    const int64_t audioMs = masterMs();
+                    if (outSeen % 24 == 0) {
+                        OH_LOG_INFO(LOG_APP,
+                                    "[vsync] out=%{public}d videoMs=%{public}lld "
+                                    "audioMs=%{public}lld diff=%{public}lld",
+                                    outSeen, (long long)videoMs, (long long)audioMs,
+                                    (long long)(videoMs - audioMs));
+                    }
+                    outSeen++;
+                    const int64_t diff = videoMs - audioMs;
+                    if (diff < -80) {
+                        // 视频落后音频超过 80ms：丢掉这一帧去追
+                        OH_VideoDecoder_FreeOutputBuffer(codec, outIdx);
+                        dropped++;
+                        lastOutMs = NowMs();
+                        continue;
+                    }
+                    // 按音频时钟预约渲染时刻，不持有输出 buffer 睡眠
+                    const int64_t targetNs = NowNs() + (diff > 0 ? diff * 1000000 : 0);
+                    OH_AVErrCode rr =
+                        OH_VideoDecoder_RenderOutputBufferAtTime(codec, outIdx, targetNs);
+                    if (rr != AV_ERR_OK) {
+                        rr = OH_VideoDecoder_RenderOutputBuffer(codec, outIdx);
+                    }
+                } else {
+                    int64_t deltaNs = 0;
+                    if (firstPtsUs >= 0 && ptsUs > firstPtsUs) {
+                        deltaNs = (ptsUs - firstPtsUs) * 1000;
+                    }
+                    int64_t targetNs = baseNs + deltaNs;
+                    if (targetNs < NowNs()) targetNs = NowNs();
+                    OH_AVErrCode rr =
+                        OH_VideoDecoder_RenderOutputBufferAtTime(codec, outIdx, targetNs);
+                    if (rr != AV_ERR_OK) {
+                        rr = OH_VideoDecoder_RenderOutputBuffer(codec, outIdx);
+                    }
                 }
                 OH_VideoDecoder_FreeOutputBuffer(codec, outIdx);
                 rendered++;
                 lastOutMs = NowMs();
                 if (rendered == 1) {
-                    OH_LOG_INFO(LOG_APP, "[vplay] first frame rendered at %{public}lld",
-                                (long long)lastOutMs);
+                    OH_LOG_INFO(LOG_APP,
+                                "[vplay] first frame rendered at %{public}lld audioMs=%{public}d",
+                                (long long)lastOutMs, audioActive ? (int)audio->PlayedMs() : -1);
                 }
             }
 
             if (eosSent && !havePkt && (NowMs() - lastOutMs) > 400) break;
         }
 
-        OH_LOG_INFO(LOG_APP, "[vplay] done pushed=%{public}d rendered=%{public}d stop=%{public}d",
-                    pushed, rendered, gStop.load() ? 1 : 0);
+        OH_LOG_INFO(LOG_APP,
+                    "[vplay] done pushed=%{public}d rendered=%{public}d dropped=%{public}d "
+                    "audioStart=%{public}d stop=%{public}d",
+                    pushed, rendered, dropped, audioMsAtStart, ctx->stop.load() ? 1 : 0);
     } while (false);
 
     if (pkt != nullptr) av_packet_free(&pkt);
@@ -335,7 +405,7 @@ void PlaybackThread(std::string path, uint64_t surfaceId) {
         OH_VideoDecoder_Destroy(codec);
     }
     if (window != nullptr) OH_NativeWindow_DestroyNativeWindow(window);
-    if (fmtOwned != nullptr) avformat_close_input(&fmtOwned);
+    if (fmt != nullptr) avformat_close_input(&fmt);
 }
 
 }  // namespace
@@ -351,13 +421,31 @@ int VideoPlay(const std::string &path, const std::string &surfaceId, std::string
 
     {
         std::lock_guard<std::mutex> lock(gMutex);
-        gStop.store(true);
-        if (gThread.joinable()) gThread.join();
-        gStop.store(false);
-        gThread = std::thread(PlaybackThread, path, sid);
+
+        // 播放中重播：只发停止信号并 detach，旧线程自己收尾；UI 不再等 join
+        if (gCtx) gCtx->stop.store(true);
+        if (gThread.joinable()) gThread.detach();
+
+        auto audio = std::make_shared<AudioPlayer>();
+        bool audioOk = audio->Open(path) == 0;
+        if (audioOk) audioOk = audio->Play() == 0;
+        if (!audioOk) {
+            OH_LOG_WARN(LOG_APP, "[vplay] no audio track / audio open failed");
+        } else {
+            OH_LOG_INFO(LOG_APP, "[vplay] audio started route=%{public}s",
+                        audio->StatusJson().c_str());
+        }
+
+        auto ctx = std::make_shared<PlaybackCtx>();
+        gCtx = ctx;
+        gThread = std::thread(PlaybackThread, path, sid, ctx, audio, audioOk);
+
+        if (result) {
+            *result = audioOk ? "{\"state\":\"started\",\"audio\":true}"
+                              : "{\"state\":\"started\",\"audio\":false}";
+        }
     }
 
-    if (result) *result = "{\"state\":\"started\"}";
     OH_LOG_INFO(LOG_APP, "[vplay] start path=%{public}s surface=%{public}llu",
                 path.c_str(), (unsigned long long)sid);
     return 0;
@@ -365,7 +453,7 @@ int VideoPlay(const std::string &path, const std::string &surfaceId, std::string
 
 void VideoStop() {
     std::lock_guard<std::mutex> lock(gMutex);
-    gStop.store(true);
-    if (gThread.joinable()) gThread.join();
-    gStop.store(false);
+    if (gCtx) gCtx->stop.store(true);
+    if (gThread.joinable()) gThread.detach();
+    gCtx.reset();
 }
