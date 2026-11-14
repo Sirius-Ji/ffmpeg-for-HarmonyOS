@@ -615,6 +615,13 @@ void AudioPlayer::Release() {
     rendererRate_ = rendererChannels_ = rendererFrameSize_ = 0;
 }
 
+int AudioPlayer::SetVolume(float volume) {
+    if (renderer_ == nullptr) return -1;
+    if (volume < 0.0f) volume = 0.0f;
+    if (volume > 1.0f) volume = 1.0f;
+    return (int)OH_AudioRenderer_SetVolume(renderer_, volume);
+}
+
 int64_t AudioPlayer::PlayedMs() const {
     // 官方时间戳：framePosition 是已呈现帧数，timestamp 是那一帧的单调时钟时刻。
     // 不要用 realBytes_：它包含渲染器预填缓冲，会把音频时钟虚高 200ms。

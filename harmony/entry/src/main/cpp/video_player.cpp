@@ -46,6 +46,7 @@ struct PlaybackCtx {
     std::atomic<bool> stop{false};
 };
 std::shared_ptr<PlaybackCtx> gCtx;
+std::weak_ptr<AudioPlayer> gVideoAudio;
 
 int64_t NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -471,6 +472,7 @@ int VideoPlay(const std::string &path, const std::string &surfaceId, bool buffer
 
         auto ctx = std::make_shared<PlaybackCtx>();
         gCtx = ctx;
+        gVideoAudio = audio;
         gThread = std::thread(PlaybackThread, path, sid, ctx, audio, audioOk, bufferMode,
                               cropMode);
         if (result) {
@@ -480,6 +482,11 @@ int VideoPlay(const std::string &path, const std::string &surfaceId, bool buffer
         }
     }
     return 0;
+}
+
+void VideoSetVolume(float volume) {
+    auto a = gVideoAudio.lock();
+    if (a) a->SetVolume(volume);
 }
 
 void VideoStop() {

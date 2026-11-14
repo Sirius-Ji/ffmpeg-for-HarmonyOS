@@ -355,6 +355,19 @@ napi_value VideoStopFn(napi_env env, napi_callback_info /*info*/) {
     return MakeResult(env, true, "{\"state\":\"stopped\"}");
 }
 
+napi_value SetVolumeFn(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
+    if (argc < 1) return ResultError(env, "setVolume(0..1): missing value");
+    double v = 1.0;
+    napi_get_value_double(env, argv[0], &v);
+    if (v < 0.0) v = 0.0;
+    if (v > 1.0) v = 1.0;
+    VideoSetVolume((float)v);
+    return MakeResult(env, true, "{\"volume\":" + std::to_string(v) + "}");
+}
+
 // M3.1：硬解开关（A/B 对比用），影响下一次 Open
 napi_value DecoderSetHardwareFn(napi_env env, napi_callback_info info) {
     size_t argc = 1;
@@ -421,6 +434,7 @@ napi_value Init(napi_env env, napi_value exports) {
         {"videoProbe", nullptr, VideoProbeFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"videoPlay", nullptr, VideoPlayFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"videoStop", nullptr, VideoStopFn, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setVolume", nullptr, SetVolumeFn, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"decoderSetHardware", nullptr, DecoderSetHardwareFn, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);

@@ -36,6 +36,7 @@ public:
     // M4.2：音频主时钟（按渲染器实际消费的 PCM 字节换算，单位 ms）
     int64_t PlayedMs() const;
     bool IsActive() const { return state_.load() == 1 || running_.load(); }
+    int SetVolume(float volume);
 
 private:
     static int32_t OnWriteDataCb(OH_AudioRenderer *renderer, void *userData,

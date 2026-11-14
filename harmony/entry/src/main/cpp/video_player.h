@@ -9,5 +9,6 @@
 int VideoPlay(const std::string &path, const std::string &surfaceId, bool bufferMode,
               bool cropMode, std::string *result);
 void VideoStop();
+void VideoSetVolume(float volume);
 
 #endif  // FF_VIDEO_PLAYER_H

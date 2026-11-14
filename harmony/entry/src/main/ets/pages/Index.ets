@@ -16,6 +16,7 @@ struct Index {
   @State hardwareOn: boolean = true;
   @State copyPercent: number = -1;
   @State surfaceId: string = '';
+  @State volume: number = 0.8;
   private timer: number = -1;
   private videoController: XComponentController = new XComponentController();
 
@@ -37,7 +38,19 @@ struct Index {
         .onLoad(() => {
           this.surfaceId = this.videoController.getXComponentSurfaceId();
           this.status = `视频 Surface 就绪: ${this.surfaceId}`;
+          native.setVolume(this.volume);
         })
+
+      Row({ space: 8 }) {
+        Text('音量').fontSize(13)
+        Slider({ value: this.volume, min: 0, max: 1, step: 0.01 })
+          .width(260)
+          .onChange((v: number) => {
+            this.volume = v;
+            native.setVolume(v);
+            this.status = `音量: ${(v * 100).toFixed(0)}%`;
+          })
+      }
 
       Row({ space: 12 }) {
         Button('Play（内置样例）')
