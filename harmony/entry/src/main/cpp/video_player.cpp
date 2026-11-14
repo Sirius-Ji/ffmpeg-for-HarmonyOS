@@ -134,6 +134,7 @@ struct AsyncCtx {
     std::shared_ptr<AudioPlayer> audio;
     bool audioActive = false;
     bool bufferMode = false;
+    bool cropMode = false;
     OHNativeWindow *window = nullptr;
 
     std::mutex mtx;
@@ -186,14 +187,22 @@ bool RenderYuvToWindow(AsyncCtx *ctx, OHNativeWindow *window, OH_AVBuffer *buffe
 
     const int srcStride = ctx->stride > 0 ? ctx->stride : width;
     const int srcSlice = ctx->sliceHeight > 0 ? ctx->sliceHeight : height;
-    const int dstStride = h->stride > 0 ? h->stride : width;
+    const int dstStride = h->stride > 0 ? h->stride : h->width;
+    const int dstW = h->width > 0 ? h->width : width;
+    const int dstH = h->height > 0 ? h->height : height;
+    // 先填黑：Y=0、UV=128；即使 buffer geometry 不匹配也不会露绿
+    std::memset(dst, 0, (size_t)dstStride * dstH);
+    std::memset(dst + (size_t)dstStride * dstH, 128, (size_t)dstStride * dstH / 2);
+    const int copyW = width < dstW ? width : dstW;
+    const int copyH = height < dstH ? height : dstH;
     const uint8_t *srcUv = src + srcStride * srcSlice;
-    uint8_t *dstUv = dst + dstStride * h->height;
-    for (int r = 0; r < height; ++r) {
-        std::memcpy(dst + r * dstStride, src + r * srcStride, width);
+    uint8_t *dstUv = dst + dstStride * dstH;
+    for (int r = 0; r < copyH; ++r) {
+        std::memcpy(dst + r * dstStride, src + r * srcStride, copyW);
     }
-    for (int r = 0; r < height / 2; ++r) {
-        std::memcpy(dstUv + r * dstStride, srcUv + r * srcStride, width);
+    const int copyUvH = copyH / 2;
+    for (int r = 0; r < copyUvH; ++r) {
+        std::memcpy(dstUv + r * dstStride, srcUv + r * srcStride, copyW);
     }
     if (map) munmap(map, h->size);
     Region region{};
@@ -305,7 +314,8 @@ void OnNewOutputCb(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void 
 }
 
 void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<PlaybackCtx> ctl,
-                    std::shared_ptr<AudioPlayer> audio, bool audioActive, bool bufferMode) {
+                    std::shared_ptr<AudioPlayer> audio, bool audioActive, bool bufferMode,
+                    bool cropMode) {
     AVFormatContext *fmt = nullptr;
     OHNativeWindow *window = nullptr;
     OH_AVCodec *codec = nullptr;
@@ -314,6 +324,7 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
     ctx.audio = audio;
     ctx.audioActive = audioActive;
     ctx.bufferMode = bufferMode;
+    ctx.cropMode = cropMode;
 
     do {
         if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) != 0) break;
@@ -353,8 +364,16 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
         }
         ctx.window = window;
         if (bufferMode) {
+            // Buffer 模式：让 buffer 保持视频原始尺寸，交给合成器 FIT/CROP
+            OH_NativeWindow_NativeWindowHandleOpt(window, SET_BUFFER_GEOMETRY, width, height);
             OH_NativeWindow_NativeWindowHandleOpt(window, SET_FORMAT,
                                                   NATIVEBUFFER_PIXEL_FMT_YCBCR_420_SP);
+        }
+        OHScalingModeV2 scaling = cropMode ? OH_SCALING_MODE_SCALE_CROP_V2
+                                          : OH_SCALING_MODE_SCALE_FIT_V2;
+        int sr = OH_NativeWindow_NativeWindowSetScalingModeV2(window, scaling);
+        if (sr != 0) {
+            OH_LOG_WARN(LOG_APP, "[vbuf] SetScalingModeV2 rc=%{public}d", sr);
         }
 
         codec = OH_VideoDecoder_CreateByMime(OH_AVCODEC_MIMETYPE_VIDEO_AVC);
@@ -404,7 +423,7 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
 }  // namespace
 
 int VideoPlay(const std::string &path, const std::string &surfaceId, bool bufferMode,
-              std::string *result) {
+              bool cropMode, std::string *result) {
     uint64_t sid = 0;
     try {
         sid = std::stoull(surfaceId);
@@ -424,7 +443,8 @@ int VideoPlay(const std::string &path, const std::string &surfaceId, bool buffer
 
         auto ctx = std::make_shared<PlaybackCtx>();
         gCtx = ctx;
-        gThread = std::thread(PlaybackThread, path, sid, ctx, audio, audioOk, bufferMode);
+        gThread = std::thread(PlaybackThread, path, sid, ctx, audio, audioOk, bufferMode,
+                              cropMode);
         if (result) {
             *result = std::string("{\"state\":\"started\",\"audio\":") +
                       (audioOk ? "true" : "false") +

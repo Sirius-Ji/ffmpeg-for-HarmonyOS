@@ -111,18 +111,25 @@ struct Index {
           this.runVideoProbe();
         })
 
-      Button('M4.2.4 Buffer 模式（绝对帧对齐）')
+      Button('M4.2.4 Buffer 模式（FIT 留黑边）')
         .fontSize(13)
         .enabled(!this.busy)
         .onClick(() => {
-          this.playVideo(true);
+          this.playVideo(true, false);
         })
 
-      Button('M4.2 播放（BBB 30s · 兔子+音轨）')
+      Button('M4.2 播放（Surface FIT）')
         .fontSize(13)
         .enabled(!this.busy)
         .onClick(() => {
-          this.playVideo(false);
+          this.playVideo(false, false);
+        })
+
+      Button('M4.2 Surface CROP（铺满裁剪）')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => {
+          this.playVideo(false, true);
         })
 
       Button('停止视频')
@@ -430,7 +437,7 @@ struct Index {
   }
 
   // M4.1：把 rawfile 里的 BBB 复制到应用沙箱，再交给 native 解码到 XComponent surface
-  async playVideo(bufferMode: boolean = false): Promise<void> {
+  async playVideo(bufferMode: boolean = false, cropMode: boolean = false): Promise<void> {
     if (this.surfaceId.length === 0) {
       this.status = '视频 Surface 还没就绪';
       return;
@@ -445,8 +452,8 @@ struct Index {
       fs.writeSync(file.fd, data.buffer as ArrayBuffer);
       fs.closeSync(file);
       hilog.info(DOMAIN, TAG, 'video copied to sandbox: %{public}s', path);
-      const res = native.videoPlay(path, this.surfaceId, bufferMode);
-      this.status = res.ok ? `视频播放已启动(${bufferMode ? 'buffer' : 'surface'}): ${res.data}` : `视频播放失败: ${res.data}`;
+      const res = native.videoPlay(path, this.surfaceId, bufferMode, cropMode);
+      this.status = res.ok ? `视频播放已启动(${bufferMode ? 'buffer' : 'surface'},${cropMode ? 'crop' : 'fit'}): ${res.data}` : `视频播放失败: ${res.data}`;
       hilog.info(DOMAIN, TAG, 'videoPlay ok=%{public}s', String(res.ok));
     } catch (e) {
       this.status = `视频播放异常: ${JSON.stringify(e)}`;

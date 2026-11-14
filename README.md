@@ -311,6 +311,8 @@ LICENSES/       # 第三方许可证全文
   因此不是 Surface 绑定问题，而是解码器核心丢帧。`bufferMode` 仅用于对比/诊断，不能修复；
   严格帧对齐需厂商修复或改用 FFmpeg 软解。`videoProbe()` 会返回
   `surfaceBFrameRisk=true` / `knownIssue=hisi-bframe-drop` 标记。
+- 视频渲染支持 `videoPlay(path, surfaceId, bufferMode?, cropMode?)`：默认 **FIT 留黑边**，
+  `cropMode=true` 为 **CROP 裁剪铺满**；`bufferMode=true` 走 CPU NV12 上屏（诊断/帧对齐对比用）。
 - **Dolby Atmos（AC-4）m4a 不支持**：网易云「臻音全景声」这类文件，NCM 解密只去掉外层封装，
   内层是 AC-4 / 专有 DRM 音轨；FFmpeg 主线**没有 AC-4 解码器**，mov 解封装器也无法识别其 sample entry。
   打开会报 `unsupported audio codec: none (not compiled in)`（`codec_id=0`，可看 `tag=0x...` 日志确认封装）。
