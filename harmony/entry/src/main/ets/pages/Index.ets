@@ -24,6 +24,7 @@ struct Index {
   @State wmSize: number = 48;
   @State wmAlpha: number = 100;
   @State wmBold: boolean = false;
+  @State resolution: string = '720p';
   private timer: number = -1;
   private videoController: XComponentController = new XComponentController();
 
@@ -201,6 +202,15 @@ struct Index {
         Toggle({ type: ToggleType.Switch, isOn: this.wmBold })
           .onChange((v: boolean) => { this.wmBold = v; })
       }
+
+      Text('original 模式：奇数宽高自动向下取偶（853→852）')
+        .fontSize(11)
+        .fontColor(Color.Gray)
+
+      Select([{ value: 'original' }, { value: '720p' }, { value: '1080p' }])
+        .selected(1)
+        .value(this.resolution)
+        .onSelect((index: number, value: string) => { this.resolution = value; })
 
       Button('视频加文字水印')
         .fontSize(13)
@@ -586,12 +596,13 @@ struct Index {
   async watermarkVideo(): Promise<void> {
     try {
       const ctx = getContext(this) as common.UIAbilityContext;
-      const src = await this.ensureSample('bbb_1080_10s.mp4');
+      const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
       const dst = `${ctx.filesDir}/watermark.mp4`;
       this.status = 'M4.5 水印转码中…';
       native.videoTranscode(src, dst,
-        `watermark|${this.wmText}|${this.wmPosition}|${this.wmSize}|${this.wmColor}|${font}|${this.wmAlpha}|${this.wmBold ? 1 : 0}`);
+        `watermark|${this.wmText}|${this.wmPosition}|${this.wmSize}|${this.wmColor}|${font}|${this.wmAlpha}|${this.wmBold ? 1 : 0}`,
+        this.resolution);
       for (let i = 0; i < 240; i++) {
         await new Promise<void>((resolve) => setTimeout(resolve, 500));
         const s = JSON.parse(native.videoTranscodeStatus().data) as Record<string, number>;

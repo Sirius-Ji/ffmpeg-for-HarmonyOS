@@ -45,17 +45,27 @@ public:
     ~WatermarkFilter() { if (graph_) avfilter_graph_free(&graph_); }
     bool Init(const std::string &text, const std::string &position, int fontSize,
               const std::string &colorIn, const std::string &fontPath, int alpha, bool bold,
-              int width, int height) {
+              int inW, int inH, int outW, int outH) {
         graph_ = avfilter_graph_alloc();
         if (!graph_) return false;
+        const AVFilter *scaleFilter = avfilter_get_by_name("scale");
+        OH_LOG_INFO(LOG_APP, "[wm] scale_filter=%{public}p in=%{public}dx%{public}d out=%{public}dx%{public}d",
+                    scaleFilter, inW, inH, outW, outH);
+        if (!scaleFilter) return false;
         char args[256];
         snprintf(args, sizeof(args),
                  "video_size=%dx%d:pix_fmt=nv12:time_base=1/24:pixel_aspect=1/1",
-                 width, height);
+                 inW, inH);
         if (avfilter_graph_create_filter(&src_, avfilter_get_by_name("buffer"), "in",
                                          args, nullptr, graph_) < 0) return false;
         if (avfilter_graph_create_filter(&sink_, avfilter_get_by_name("buffersink"), "out",
                                          nullptr, nullptr, graph_) < 0) return false;
+        char scaleArgs[64];
+        snprintf(scaleArgs, sizeof(scaleArgs), "w=%d:h=%d", outW, outH);
+        int sr = avfilter_graph_create_filter(&scale_, scaleFilter, "scale",
+                                              scaleArgs, nullptr, graph_);
+        OH_LOG_INFO(LOG_APP, "[wm] create scale rc=%{public}d args=%{public}s", sr, scaleArgs);
+        if (sr < 0) return false;
         std::string x = "24", y = "24";
         if (position == "top-right") { x = "w-tw-24"; }
         else if (position == "bottom-left") { y = "h-th-24"; }
@@ -77,21 +87,42 @@ public:
                                          dt, nullptr, graph_) < 0) return false;
         if (avfilter_graph_create_filter(&fmt_, avfilter_get_by_name("format"), "fmt",
                                          "pix_fmts=nv12", nullptr, graph_) < 0) return false;
-        if (avfilter_link(src_, 0, draw_, 0) < 0 || avfilter_link(draw_, 0, fmt_, 0) < 0 ||
+        if (avfilter_link(src_, 0, scale_, 0) < 0 || avfilter_link(scale_, 0, draw_, 0) < 0 ||
+            avfilter_link(draw_, 0, fmt_, 0) < 0 ||
             avfilter_link(fmt_, 0, sink_, 0) < 0) return false;
-        if (avfilter_graph_config(graph_, nullptr) < 0) return false;
+        if (avfilter_graph_config(graph_, nullptr) < 0) {
+            OH_LOG_ERROR(LOG_APP, "[wm] graph_config failed");
+            return false;
+        }
+        OH_LOG_INFO(LOG_APP, "[wm] graph OK buffer->scale->drawtext->format->sink");
         ready_ = true;
         return true;
     }
     int Run(AVFrame *in, AVFrame *out) {
         if (!ready_) return -1;
         int ret = av_buffersrc_add_frame_flags(src_, in, AV_BUFFERSRC_FLAG_KEEP_REF);
-        if (ret < 0) return ret;
+        if (ret < 0) {
+            OH_LOG_ERROR(LOG_APP, "[wm] buffersrc_add failed ret=%{public}d in=%{public}dx%{public}d",
+                         ret, in->width, in->height);
+            return ret;
+        }
+        ret = av_buffersink_get_frame(sink_, out);
+        if (ret < 0) {
+            OH_LOG_ERROR(LOG_APP, "[wm] buffersink_get failed ret=%{public}d", ret);
+            return ret;
+        }
+        OH_LOG_INFO(LOG_APP, "[wm] frame out=%{public}dx%{public}d", out->width, out->height);
+        return ret;
+    }
+    int SendEOS() {
+        return av_buffersrc_add_frame_flags(src_, nullptr, 0);
+    }
+    int Receive(AVFrame *out) {
         return av_buffersink_get_frame(sink_, out);
     }
 private:
     AVFilterGraph *graph_ = nullptr;
-    AVFilterContext *src_ = nullptr, *sink_ = nullptr, *draw_ = nullptr, *fmt_ = nullptr;
+    AVFilterContext *src_ = nullptr, *sink_ = nullptr, *scale_ = nullptr, *draw_ = nullptr, *fmt_ = nullptr;
     bool ready_ = false;
 };
 struct OutPkt {
@@ -259,8 +290,10 @@ std::string VideoTranscodeStatusJson() {
 }
 
 int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
-                   const std::string &format, std::string *result) {
+                   const std::string &format, const std::string &resolution,
+                   std::string *result) {
     SetStatus(1, "{\"state\":1}");
+    OH_LOG_INFO(LOG_APP, "[M4.6_BUILD_VER] Native Res=%{public}s scale_enabled=1", resolution.c_str());
     const bool watermark = format.rfind("watermark|", 0) == 0;
     std::string wmText = "FFmpeg-ohos", wmPosition = "top-left", wmColor = "white";
     std::string fontPath;
@@ -438,9 +471,13 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
             }
             avformat_flush(in);
             AVCodecParameters *par = in->streams[vidx]->codecpar;
-            const int outW = par->width & ~1;
-            const int outH = par->height & ~1;
-            OH_LOG_INFO(LOG_APP, "[vtrans] output %{public}dx%{public}d", outW, outH);
+            const int inW = par->width & ~1;
+            const int inH = par->height & ~1;
+            int outW = inW, outH = inH;
+            if (resolution == "720p") { outW = 1280; outH = 720; }
+            else if (resolution == "1080p") { outW = 1920; outH = 1080; }
+            OH_LOG_INFO(LOG_APP, "[vtrans] output %{public}dx%{public}d res=%{public}s",
+                        outW, outH, resolution.c_str());
             const AVCodec *d = avcodec_find_decoder(par->codec_id);
             vdec = avcodec_alloc_context3(d);
             if (!d || !vdec || avcodec_parameters_to_context(vdec, par) < 0 ||
@@ -469,19 +506,23 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                 frame = av_frame_alloc();
                 nv = av_frame_alloc();
                 nv->format = AV_PIX_FMT_NV12;
-                nv->width = outW;
-                nv->height = outH;
+                nv->width = watermark ? inW : outW;
+                nv->height = watermark ? inH : outH;
                 if (av_frame_get_buffer(nv, 32) < 0) failed = 6;
             }
             if (!failed) {
                 pkt = av_packet_alloc();
                 const AVRational outTb = AVRational{srcRate.den, srcRate.num};
                 WatermarkFilter wm;
-                const bool wmOk = watermark && wm.Init(wmText, wmPosition, wmFontSize, wmColor, fontPath, wmAlpha, wmBold, outW, outH);
+                const bool wmOk = watermark && wm.Init(wmText, wmPosition, wmFontSize, wmColor, fontPath, wmAlpha, wmBold, inW, inH, outW, outH);
                 if (watermark)
                     OH_LOG_INFO(LOG_APP, "[vtrans] watermark=%{public}d font=%{public}s",
                                 wmOk ? 1 : 0, fontPath.c_str());
-                while (av_read_frame(in, pkt) >= 0) {
+                if (watermark && !wmOk) {
+                    failed = 20;
+                    SetStatus(3, "{\"state\":3,\"code\":\"E_FILTER_INIT_FAILED\"}");
+                }
+                while (!failed && av_read_frame(in, pkt) >= 0) {
                     if (pkt->stream_index != vidx) { av_packet_unref(pkt); continue; }
                     if (avcodec_send_packet(vdec, pkt) == 0) {
                         while (avcodec_receive_frame(vdec, frame) == 0) {
@@ -527,6 +568,41 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                         }
                     }
                     av_packet_unref(pkt);
+                }
+                if (wmOk) {
+                    int eosRet = wm.SendEOS();
+                    OH_LOG_INFO(LOG_APP, "[wm] EOS sent ret=%{public}d", eosRet);
+                    int drained = 0;
+                    while (true) {
+                        AVFrame *of = av_frame_alloc();
+                        int r = wm.Receive(of);
+                        if (r < 0) {
+                            OH_LOG_INFO(LOG_APP, "[wm] drain end r=%{public}d frames=%{public}d", r, drained);
+                            av_frame_free(&of);
+                            break;
+                        }
+                        of->pts = frames++;
+                        if (avcodec_send_frame(venc, of) == 0) {
+                            while (avcodec_receive_packet(venc, pkt) == 0) {
+                                OutPkt op;
+                                op.pkt = av_packet_clone(pkt);
+                                op.stream = 0;
+                                const bool bad_ts = (pkt->dts == AV_NOPTS_VALUE || pkt->pts == 0);
+                                int64_t stamp = bad_ts ? vpackets : (pkt->dts != AV_NOPTS_VALUE ? pkt->dts : pkt->pts);
+                                if (bad_ts) {
+                                    op.pkt->pts = stamp;
+                                    op.pkt->dts = stamp;
+                                }
+                                op.when = stamp * av_q2d(outTb);
+                                op.tb = outTb;
+                                packets.push_back(op);
+                                vpackets++;
+                                av_packet_unref(pkt);
+                            }
+                        }
+                        av_frame_free(&of);
+                        drained++;
+                    }
                 }
                 avcodec_send_frame(venc, nullptr);
                 while (avcodec_receive_packet(venc, pkt) == 0) {
