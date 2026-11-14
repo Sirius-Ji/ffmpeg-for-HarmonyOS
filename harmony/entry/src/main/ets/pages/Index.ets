@@ -111,11 +111,18 @@ struct Index {
           this.runVideoProbe();
         })
 
+      Button('M4.2.4 Buffer 模式（绝对帧对齐）')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => {
+          this.playVideo(true);
+        })
+
       Button('M4.2 播放（BBB 30s · 兔子+音轨）')
         .fontSize(13)
         .enabled(!this.busy)
         .onClick(() => {
-          this.playVideo();
+          this.playVideo(false);
         })
 
       Button('停止视频')
@@ -423,7 +430,7 @@ struct Index {
   }
 
   // M4.1：把 rawfile 里的 BBB 复制到应用沙箱，再交给 native 解码到 XComponent surface
-  async playVideo(): Promise<void> {
+  async playVideo(bufferMode: boolean = false): Promise<void> {
     if (this.surfaceId.length === 0) {
       this.status = '视频 Surface 还没就绪';
       return;
@@ -438,8 +445,8 @@ struct Index {
       fs.writeSync(file.fd, data.buffer as ArrayBuffer);
       fs.closeSync(file);
       hilog.info(DOMAIN, TAG, 'video copied to sandbox: %{public}s', path);
-      const res = native.videoPlay(path, this.surfaceId);
-      this.status = res.ok ? `视频播放已启动: ${res.data}` : `视频播放失败: ${res.data}`;
+      const res = native.videoPlay(path, this.surfaceId, bufferMode);
+      this.status = res.ok ? `视频播放已启动(${bufferMode ? 'buffer' : 'surface'}): ${res.data}` : `视频播放失败: ${res.data}`;
       hilog.info(DOMAIN, TAG, 'videoPlay ok=%{public}s', String(res.ok));
     } catch (e) {
       this.status = `视频播放异常: ${JSON.stringify(e)}`;

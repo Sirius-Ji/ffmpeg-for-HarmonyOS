@@ -331,16 +331,18 @@ napi_value VideoProbeFn(napi_env env, napi_callback_info /*info*/) {
     return MakeResult(env, true, json);
 }
 
-// M4.1：videoPlay(path, surfaceId) —— 启动后台线程，把 H.264 解到 XComponent surface
+// M4.1：videoPlay(path, surfaceId[, bufferMode]) —— 启动后台线程，把 H.264 解到 XComponent surface
 napi_value VideoPlayFn(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value argv[2] = {nullptr, nullptr};
+    size_t argc = 3;
+    napi_value argv[3] = {nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc < 2) return ResultError(env, "videoPlay(path, surfaceId): missing args");
+    if (argc < 2) return ResultError(env, "videoPlay(path, surfaceId[, bufferMode]): missing args");
     const std::string path = GetString(env, argv[0]);
     const std::string surfaceId = GetString(env, argv[1]);
+    bool bufferMode = false;
+    if (argc >= 3) napi_get_value_bool(env, argv[2], &bufferMode);
     std::string json;
-    if (VideoPlay(path, surfaceId, &json) != 0) {
+    if (VideoPlay(path, surfaceId, bufferMode, &json) != 0) {
         return MakeResult(env, false, json);
     }
     return MakeResult(env, true, json);

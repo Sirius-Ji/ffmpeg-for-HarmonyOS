@@ -30,7 +30,7 @@ declare const native: {
   // M4.0 探针：查系统硬解对 H.264/H.265 的能力、最大分辨率与可创建性
   videoProbe: () => NapiResult;
   // M4.1：把本地 H.264 mp4 解到 XComponent 的 surface（surfaceId 来自 XComponentController）
-  videoPlay: (path: string, surfaceId: string) => NapiResult;
+  videoPlay: (path: string, surfaceId: string, bufferMode?: boolean) => NapiResult;
   videoStop: () => NapiResult;
   // M3.1 硬解开关（A/B 对比用），影响下一次 Open
   decoderSetHardware: (on: boolean) => NapiResult;

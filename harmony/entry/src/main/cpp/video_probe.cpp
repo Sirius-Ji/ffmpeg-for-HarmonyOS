@@ -100,7 +100,7 @@ int VideoProbe(std::string *json) {
            << ",\"supports4K\":" << (p4k ? "true" : "false")
            << ",\"surfaceBFrameRisk\":" << (v.surfaceBFrameRisk ? "true" : "false")
            << ",\"knownIssue\":\""
-           << (v.surfaceBFrameRisk ? "surface-bframe-drop" : "") << "\"}";
+           << (v.surfaceBFrameRisk ? "hisi-bframe-drop" : "") << "\"}";
 
         OH_LOG_INFO(LOG_APP,
                     "[vprobe] codec=%{public}s mime=%{public}s cap=%{public}d hw=%{public}d "

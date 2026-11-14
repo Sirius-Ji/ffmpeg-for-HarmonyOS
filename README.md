@@ -306,9 +306,11 @@ LICENSES/       # 第三方许可证全文
 - **Opus 编码是 FFmpeg 原生实验性实现**：调用 `avcodec_open2` 前必须设
   `avctx->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL`，且只支持 48 kHz / 2ch。
   帧长对齐到 960（20 ms）；我们的转码器按 `enc->frame_size` 切片，不写死。
-- **部分海思芯片在 Surface 模式下会丢约 3 个 B 帧**（30 秒 24fps 原片实测 721 个包只吐 719 帧，
-  同步/异步回调均复现，合法且内容唯一的 B 帧）。极度要求帧对齐的场景请切换为 **Buffer 输出模式**
-  用 CPU 渲染；`videoProbe()` 会返回 `surfaceBFrameRisk=true` / `knownIssue=surface-bframe-drop` 标记。
+- **部分海思芯片 H.264 B 帧解码会丢 2–3 帧**：30 秒 24fps 原始 B 帧片实测 721 个包只吐 719 帧；
+  Surface 同步、Surface 异步、**Buffer 输出 + CPU 渲染** 三种模式均复现，`renderFail=0` 也补不回来，
+  因此不是 Surface 绑定问题，而是解码器核心丢帧。`bufferMode` 仅用于对比/诊断，不能修复；
+  严格帧对齐需厂商修复或改用 FFmpeg 软解。`videoProbe()` 会返回
+  `surfaceBFrameRisk=true` / `knownIssue=hisi-bframe-drop` 标记。
 - **Dolby Atmos（AC-4）m4a 不支持**：网易云「臻音全景声」这类文件，NCM 解密只去掉外层封装，
   内层是 AC-4 / 专有 DRM 音轨；FFmpeg 主线**没有 AC-4 解码器**，mov 解封装器也无法识别其 sample entry。
   打开会报 `unsupported audio codec: none (not compiled in)`（`codec_id=0`，可看 `tag=0x...` 日志确认封装）。

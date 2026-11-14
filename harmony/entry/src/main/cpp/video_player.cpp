@@ -10,6 +10,10 @@
 #include <thread>
 #include <vector>
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
 #include <hilog/log.h>
 
 #include "audio_player.h"
@@ -23,6 +27,8 @@ extern "C" {
 #include <multimedia/player_framework/native_avcodec_videodecoder.h>
 #include <multimedia/player_framework/native_avformat.h>
 #include <multimedia/player_framework/native_averrors.h>
+#include <native_buffer/buffer_common.h>
+#include <native_window/buffer_handle.h>
 #include <native_window/external_window.h>
 }
 
@@ -51,10 +57,7 @@ int64_t NowNs() {
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
-
-void StartCode(std::vector<uint8_t> *out) {
-    out->insert(out->end(), {0, 0, 0, 1});
-}
+void StartCode(std::vector<uint8_t> *out) { out->insert(out->end(), {0, 0, 0, 1}); }
 
 std::vector<uint8_t> BuildAnnexBCsd(const uint8_t *ed, int size) {
     std::vector<uint8_t> out;
@@ -130,6 +133,8 @@ struct AsyncCtx {
     std::shared_ptr<PlaybackCtx> ctl;
     std::shared_ptr<AudioPlayer> audio;
     bool audioActive = false;
+    bool bufferMode = false;
+    OHNativeWindow *window = nullptr;
 
     std::mutex mtx;
     std::deque<RawPkt> queue;
@@ -140,19 +145,76 @@ struct AsyncCtx {
     int pushed = 0;
     int rendered = 0;
     int dropped = 0;
+    int renderFail = 0;
+    int stride = 0;
+    int sliceHeight = 0;
+    int width = 0;
+    int height = 0;
 };
+
+// NV12 解码输出 → XComponent NativeWindow（CPU 拷贝，Buffer 模式兜底）
+bool RenderYuvToWindow(AsyncCtx *ctx, OHNativeWindow *window, OH_AVBuffer *buffer, int width,
+                       int height) {
+    const uint8_t *src = OH_AVBuffer_GetAddr(buffer);
+    if (!src) return false;
+
+    OHNativeWindowBuffer *winBuf = nullptr;
+    int fence = -1;
+    if (OH_NativeWindow_NativeWindowRequestBuffer(window, &winBuf, &fence) != 0 || !winBuf) {
+        return false;
+    }
+    BufferHandle *h = OH_NativeWindow_GetBufferHandleFromNative(winBuf);
+    if (!h) {
+        OH_NativeWindow_NativeWindowAbortBuffer(window, winBuf);
+        return false;
+    }
+    uint8_t *dst = static_cast<uint8_t *>(h->virAddr);
+    void *map = nullptr;
+    if (!dst && h->fd >= 0 && h->size > 0) {
+        map = mmap(nullptr, h->size, PROT_READ | PROT_WRITE, MAP_SHARED, h->fd, 0);
+        if (map == MAP_FAILED) {
+            OH_NativeWindow_NativeWindowAbortBuffer(window, winBuf);
+            return false;
+        }
+        dst = static_cast<uint8_t *>(map);
+    }
+    if (!dst) {
+        if (map) munmap(map, h->size);
+        OH_NativeWindow_NativeWindowAbortBuffer(window, winBuf);
+        return false;
+    }
+
+    const int srcStride = ctx->stride > 0 ? ctx->stride : width;
+    const int srcSlice = ctx->sliceHeight > 0 ? ctx->sliceHeight : height;
+    const int dstStride = h->stride > 0 ? h->stride : width;
+    const uint8_t *srcUv = src + srcStride * srcSlice;
+    uint8_t *dstUv = dst + dstStride * h->height;
+    for (int r = 0; r < height; ++r) {
+        std::memcpy(dst + r * dstStride, src + r * srcStride, width);
+    }
+    for (int r = 0; r < height / 2; ++r) {
+        std::memcpy(dstUv + r * dstStride, srcUv + r * srcStride, width);
+    }
+    if (map) munmap(map, h->size);
+    Region region{};
+    int fr = OH_NativeWindow_NativeWindowFlushBuffer(window, winBuf, fence, region);
+    if (fr != 0) {
+        OH_LOG_WARN(LOG_APP, "[vbuf] FlushBuffer rc=%{public}d", fr);
+        return false;
+    }
+    return true;
+}
 
 void OnErrorCb(OH_AVCodec *, int32_t errorCode, void *userData) {
     auto *ctx = static_cast<AsyncCtx *>(userData);
     if (ctx) ctx->failed = true;
-    OH_LOG_ERROR(LOG_APP, "[vasync] errorCode=%{public}d", errorCode);
+    OH_LOG_ERROR(LOG_APP, "[vbuf] errorCode=%{public}d", errorCode);
 }
 void OnStreamChangedCb(OH_AVCodec *, OH_AVFormat *, void *) {}
 
 void OnNeedInputCb(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void *userData) {
     auto *ctx = static_cast<AsyncCtx *>(userData);
     if (!ctx || !buffer) return;
-
     std::lock_guard<std::mutex> lock(ctx->mtx);
     if (ctx->eosSent) return;
     if (ctx->queue.empty()) {
@@ -163,13 +225,10 @@ void OnNeedInputCb(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void 
         ctx->eosSent = true;
         return;
     }
-
     RawPkt rp = std::move(ctx->queue.front());
     ctx->queue.pop_front();
     const int cap = OH_AVBuffer_GetCapacity(buffer);
     if ((int)rp.data.size() > cap) {
-        OH_LOG_ERROR(LOG_APP, "[vasync] pkt %{public}d > cap %{public}d",
-                     (int)rp.data.size(), cap);
         OH_AVCodecBufferAttr attr{};
         attr.size = 0;
         OH_AVBuffer_SetBufferAttr(buffer, &attr);
@@ -177,7 +236,6 @@ void OnNeedInputCb(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void 
         return;
     }
     std::memcpy(OH_AVBuffer_GetAddr(buffer), rp.data.data(), rp.data.size());
-
     OH_AVCodecBufferAttr attr{};
     attr.pts = rp.ptsUs;
     attr.size = (int32_t)rp.data.size();
@@ -196,7 +254,6 @@ void OnNewOutputCb(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void 
     OH_AVCodecBufferAttr attr{};
     int64_t ptsUs = 0;
     if (OH_AVBuffer_GetBufferAttr(buffer, &attr) == AV_ERR_OK) ptsUs = attr.pts;
-
     const int64_t videoMs =
         (ptsUs - (ctx->firstPtsUs >= 0 ? ctx->firstPtsUs : 0)) / 1000;
     int64_t audioMs = -1;
@@ -207,22 +264,48 @@ void OnNewOutputCb(OH_AVCodec *codec, uint32_t index, OH_AVBuffer *buffer, void 
         OH_VideoDecoder_FreeOutputBuffer(codec, index);
         return;
     }
-    int64_t targetNs = NowNs();
-    if (ctx->audioActive && audioMs >= 0 && videoMs > audioMs) {
-        targetNs += (videoMs - audioMs) * 1000000;
+
+    if (ctx->bufferMode) {
+        if (!ctx->window) {
+            ctx->renderFail++;
+        } else {
+            // 首次输出时读取解码器实际 stride / sliceHeight
+            if (ctx->stride <= 0) {
+                OH_AVFormat *desc = OH_VideoDecoder_GetOutputDescription(codec);
+                if (desc) {
+                    OH_AVFormat_GetIntValue(desc, OH_MD_KEY_VIDEO_STRIDE, &ctx->stride);
+                    OH_AVFormat_GetIntValue(desc, OH_MD_KEY_VIDEO_SLICE_HEIGHT,
+                                            &ctx->sliceHeight);
+                    OH_AVFormat_Destroy(desc);
+                }
+            }
+            if (!RenderYuvToWindow(ctx, ctx->window, buffer, ctx->width, ctx->height)) {
+                ctx->renderFail++;
+            }
+            int64_t targetNs = NowNs();
+            if (ctx->audioActive && audioMs >= 0 && videoMs > audioMs) {
+                targetNs += (videoMs - audioMs) * 1000000;
+            }
+            (void)targetNs;
+        }
+    } else {
+        int64_t targetNs = NowNs();
+        if (ctx->audioActive && audioMs >= 0 && videoMs > audioMs) {
+            targetNs += (videoMs - audioMs) * 1000000;
+        }
+        OH_AVErrCode rc = OH_VideoDecoder_RenderOutputBufferAtTime(codec, index, targetNs);
+        if (rc != AV_ERR_OK) OH_VideoDecoder_RenderOutputBuffer(codec, index);
     }
-    OH_AVErrCode rc = OH_VideoDecoder_RenderOutputBufferAtTime(codec, index, targetNs);
-    if (rc != AV_ERR_OK) OH_VideoDecoder_RenderOutputBuffer(codec, index);
     OH_VideoDecoder_FreeOutputBuffer(codec, index);
     ctx->rendered++;
     ctx->lastOutMs = NowMs();
     if (ctx->rendered == 1) {
-        OH_LOG_INFO(LOG_APP, "[vasync] first frame audioMs=%{public}lld", (long long)audioMs);
+        OH_LOG_INFO(LOG_APP, "[vbuf] first output audioMs=%{public}lld", (long long)audioMs);
     }
 }
 
 void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<PlaybackCtx> ctl,
-                    std::shared_ptr<AudioPlayer> audio, bool audioActive) {
+                    std::shared_ptr<AudioPlayer> audio, bool audioActive, bool bufferMode) {
     AVFormatContext *fmt = nullptr;
     OHNativeWindow *window = nullptr;
     OH_AVCodec *codec = nullptr;
@@ -230,7 +313,7 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
     ctx.ctl = ctl;
     ctx.audio = audio;
     ctx.audioActive = audioActive;
-    const std::vector<uint8_t> emptyCsd;
+    ctx.bufferMode = bufferMode;
 
     do {
         if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) != 0) break;
@@ -242,6 +325,10 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
         const std::vector<uint8_t> csd =
             BuildAnnexBCsd(st->codecpar->extradata, st->codecpar->extradata_size);
         const int nalLen = NalLengthSize(st->codecpar->extradata, st->codecpar->extradata_size);
+        const int width = st->codecpar->width;
+        const int height = st->codecpar->height;
+        ctx.width = width;
+        ctx.height = height;
 
         AVPacket *pkt = av_packet_alloc();
         if (!pkt) break;
@@ -260,34 +347,33 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
         }
         av_packet_free(&pkt);
 
-        const int width = st->codecpar->width;
-        const int height = st->codecpar->height;
-        AVRational fr = av_guess_frame_rate(fmt, st, nullptr);
-        int fps = (fr.num > 0 && fr.den > 0) ? (int)(fr.num / fr.den + 0.5) : 30;
-        if (fps <= 0 || fps > 120) fps = 30;
-        OH_LOG_INFO(LOG_APP, "[vasync] queue=%{public}d %{public}dx%{public}d csd=%{public}d",
-                    (int)ctx.queue.size(), width, height, (int)csd.size());
-
         if (OH_NativeWindow_CreateNativeWindowFromSurfaceId(surfaceId, &window) != 0 ||
             window == nullptr) {
             break;
         }
+        ctx.window = window;
+        if (bufferMode) {
+            OH_NativeWindow_NativeWindowHandleOpt(window, SET_FORMAT,
+                                                  NATIVEBUFFER_PIXEL_FMT_YCBCR_420_SP);
+        }
+
         codec = OH_VideoDecoder_CreateByMime(OH_AVCODEC_MIMETYPE_VIDEO_AVC);
         if (!codec) break;
-
         OH_AVFormat *format = OH_AVFormat_Create();
         if (!format) break;
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_WIDTH, width);
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_HEIGHT, height);
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, AV_PIXEL_FORMAT_NV12);
-        OH_AVFormat_SetIntValue(format, OH_MD_KEY_FRAME_RATE, fps);
+        OH_AVFormat_SetIntValue(format, OH_MD_KEY_FRAME_RATE, 24);
         OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENABLE_LOW_LATENCY, 0);
 
         OH_AVErrCode rc = OH_VideoDecoder_Configure(codec, format);
         OH_AVFormat_Destroy(format);
         if (rc != AV_ERR_OK) break;
-        rc = OH_VideoDecoder_SetSurface(codec, window);
-        if (rc != AV_ERR_OK) break;
+        if (!bufferMode) {
+            rc = OH_VideoDecoder_SetSurface(codec, window);
+            if (rc != AV_ERR_OK) break;
+        }
         OH_AVCodecCallback cb{OnErrorCb, OnStreamChangedCb, OnNeedInputCb, OnNewOutputCb};
         rc = OH_VideoDecoder_RegisterCallback(codec, cb, &ctx);
         if (rc != AV_ERR_OK) break;
@@ -301,10 +387,10 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
             if (ctx.eosSent && NowMs() - ctx.lastOutMs > 3000) break;
         }
         OH_LOG_INFO(LOG_APP,
-                    "[vasync] done pushed=%{public}d rendered=%{public}d dropped=%{public}d "
-                    "eos=%{public}d failed=%{public}d",
-                    ctx.pushed, ctx.rendered, ctx.dropped, ctx.eosSent ? 1 : 0,
-                    ctx.failed ? 1 : 0);
+                    "[vbuf] done bufferMode=%{public}d pushed=%{public}d rendered=%{public}d "
+                    "dropped=%{public}d renderFail=%{public}d eos=%{public}d failed=%{public}d",
+                    bufferMode ? 1 : 0, ctx.pushed, ctx.rendered, ctx.dropped, ctx.renderFail,
+                    ctx.eosSent ? 1 : 0, ctx.failed ? 1 : 0);
     } while (false);
 
     if (codec) {
@@ -317,7 +403,8 @@ void PlaybackThread(std::string path, uint64_t surfaceId, std::shared_ptr<Playba
 
 }  // namespace
 
-int VideoPlay(const std::string &path, const std::string &surfaceId, std::string *result) {
+int VideoPlay(const std::string &path, const std::string &surfaceId, bool bufferMode,
+              std::string *result) {
     uint64_t sid = 0;
     try {
         sid = std::stoull(surfaceId);
@@ -333,18 +420,17 @@ int VideoPlay(const std::string &path, const std::string &surfaceId, std::string
         auto audio = std::make_shared<AudioPlayer>();
         bool audioOk = audio->Open(path) == 0;
         if (audioOk) audioOk = audio->Play() == 0;
-        if (!audioOk) OH_LOG_WARN(LOG_APP, "[vasync] no audio track");
+        if (!audioOk) OH_LOG_WARN(LOG_APP, "[vbuf] no audio track");
 
         auto ctx = std::make_shared<PlaybackCtx>();
         gCtx = ctx;
-        gThread = std::thread(PlaybackThread, path, sid, ctx, audio, audioOk);
+        gThread = std::thread(PlaybackThread, path, sid, ctx, audio, audioOk, bufferMode);
         if (result) {
-            *result = audioOk ? "{\"state\":\"started\",\"audio\":true,\"mode\":\"async\"}"
-                              : "{\"state\":\"started\",\"audio\":false,\"mode\":\"async\"}";
+            *result = std::string("{\"state\":\"started\",\"audio\":") +
+                      (audioOk ? "true" : "false") +
+                      ",\"mode\":\"" + (bufferMode ? "buffer" : "surface") + "\"}";
         }
     }
-    OH_LOG_INFO(LOG_APP, "[vasync] start path=%{public}s surface=%{public}llu",
-                path.c_str(), (unsigned long long)sid);
     return 0;
 }
 
