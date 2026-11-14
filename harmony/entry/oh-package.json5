@@ -6,6 +6,6 @@
   "author": "",
   "license": "LGPL-2.1-or-later",
   "dependencies": {
-    "libentry.so": "file:./src/main/cpp/types/libentry"
+    "@ohos/ffmpeg_ohos": "file:../ffmpeg_ohos"
   }
 }

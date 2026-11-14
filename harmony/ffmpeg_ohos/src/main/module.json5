@@ -1,0 +1,10 @@
+{
+  "module": {
+    "name": "ffmpeg_ohos",
+    "type": "har",
+    "deviceTypes": [
+      "default",
+      "tablet"
+    ]
+  }
+}

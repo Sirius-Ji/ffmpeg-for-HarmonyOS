@@ -1,12 +1,33 @@
 # ffmpeg-for-HarmonyOS
 
-> **v0.1.5 Alpha · 早期测试版**
+> **v0.2.0 · M5.0 HAR**
 >
-> 解码 / 播放链路已真机验证（192 kHz/2ch FLAC 无卡顿、无爆音），**v0.1.1 起加入基础转码能力**
-> （音频编码 `aac/alac/flac/mp3(libmp3lame)/opus/pcm_s16le/pcm_s24le`，
-> 封装 `mp4/mov/ipod/mp3/flac/wav/matroska/adts/ogg/opus`）。
-> **v0.1.3 起 M3.0/M3.1 硬解已合入**，并随 Release 提供 CMake Config。
+> 现可直接以 `ffmpeg_ohos.har` 集成（约 **18.5 MB**，含 arm64-v8a / x86_64 native）。
+> 视频硬解、零拷贝渲染、文字/图片水印、音视频多格式转码均已真机验证。
 > **API 仍可能变更**，欢迎试用、集成、提 Issue 和 PR。
+
+## Quick Start（HAR）
+
+```json5
+// entry/oh-package.json5
+"dependencies": {
+  "@ohos/ffmpeg_ohos": "file:../ffmpeg_ohos"
+}
+```
+
+```ts
+import { FFmpegOhos } from '@ohos/ffmpeg_ohos';
+
+// 文字 + 图片水印转码
+FFmpegOhos.videoTranscode(
+  srcPath, dstPath,
+  `watermark|FFmpeg-ohos|top-left|48|white|${fontPath}|100|0`,
+  '1080p', 1.0, logoPath
+);
+```
+
+HAR 自带 `libentry.so` 与 FFmpeg 动态库，无需在 entry 再配置 `externalNativeOptions`。
+
 
 > **ABI 稳定性承诺：** 本库锁定 SONAME 为 `.so.63` / `.so.61` / `.so.7`。
 > 若未来 FFmpeg 升级至 n10，SONAME 发生变更将视为**破坏性更新**，需升级 **major 版本**。

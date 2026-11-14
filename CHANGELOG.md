@@ -2,6 +2,38 @@
 
 所有值得注意的变更都记在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## v0.2.0-m5.0-har（2026-11-15）
+
+M5.0 把底层 FFmpeg 基建封装为可 `ohpm` 引用的 HAR 模块，entry 退化为纯 ArkTS 测试壳。
+
+### Added
+
+- **`@ohos/ffmpeg_ohos` HAR 模块**：自带 arm64-v8a / x86_64 native 编译，HAR 约 18.5MB。
+- **类型化 ArkTS API**：`FFmpegOhos.videoTranscode` / `videoPlay` / `extractMedia` / `setVolume` / `videoProbe` / `imageProbe` 等 20 个方法。
+- **图片水印**：PNG/JPEG 解码、RGBA 转换、双输入 `overlay`（右下角 `x=W-w-20:y=H-h-20`）。
+- **文字水印**：drawtext 支持文字、位置、字号、颜色、透明度、加粗描边。
+- **分辨率控制**：`original` / `720p` / `1080p`，filter graph `buffer -> scale -> overlay -> drawtext -> format=nv12`。
+- **音量增益**：0.0–2.0，PCM 乘系数并 clip；保留源声道数，避免单声道上混 -3dB。
+
+### Fixed
+
+- **海思两段式封装花屏**：AnnexB → MPEG-TS → FFmpeg 原生 remux → MP4，替代手写 AVCC。
+- **单声道 -3dB“吞音”**：强制 mono→stereo 导致瞬态峰值 31517→22286；改为跟随源声道后恢复 31517。
+- **假 zlib 桩**：OHOS 系统无 `/system/lib64/libz.so`，sysroot 仅 8.9KB 桩，PNG `avcodec_open2` 返回 `AVERROR_EXTERNAL`；交叉编译 zlib 1.3.1（arm64 105KB / x86_64 107KB）并随 HAR 打包。
+- **EOS drain**：滤镜发 NULL/EOS，buffersink 抽空，编码器 flush 后再 mux，修复 720p 卡在 stage=12。
+- **scale filter EINVAL**：`scale=1280:720` 改为命名参数 `w=1280:h=720`。
+- **Hvigor 缓存旧 libentry**：通过 `M4.6_BUILD_VER` 特征码与强清 `.cxx/build` 定位。
+
+### Changed
+
+- entry 的 C++ 与 `.so` 全部迁入 `ffmpeg_ohos`，entry 只保留 ArkTS UI。
+- FFmpeg 增加 `png` / `mjpeg` 解码器与 `image2` demuxer，链接系统 `libz`。
+- release 包 7 库：avcodec / avformat / avutil / swresample / avfilter / swscale / mp3lame。
+
+### License
+
+- 全链路 **LGPL-2.1-or-later**，未启用 GPL / nonfree，不含 x264/x265。
+
 ## v0.1.5（2026-11-05）
 
 ### 可复现构建验证（空版本）

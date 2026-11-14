@@ -3,7 +3,8 @@ import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 // NAPI 模块：libentry.so，C 侧 nm_modname = "entry"
-import native from 'libentry.so';
+import { FFmpegOhos } from '@ohos/ffmpeg_ohos';
+import type { NapiResult } from '@ohos/ffmpeg_ohos';
 
 const DOMAIN = 0xFF01;
 const TAG = 'FFMUI';
@@ -48,7 +49,7 @@ struct Index {
         .onLoad(() => {
           this.surfaceId = this.videoController.getXComponentSurfaceId();
           this.status = `视频 Surface 就绪: ${this.surfaceId}`;
-          native.setVolume(this.volume);
+          FFmpegOhos.setVolume(this.volume);
         })
 
       Row({ space: 8 }) {
@@ -57,7 +58,7 @@ struct Index {
           .width(260)
           .onChange((v: number) => {
             this.volume = v;
-            native.setVolume(v);
+            FFmpegOhos.setVolume(v);
             this.status = `音量: ${(v * 100).toFixed(0)}%`;
           })
       }
@@ -228,7 +229,7 @@ struct Index {
       Button('停止视频')
         .fontSize(13)
         .onClick(() => {
-          native.videoStop();
+          FFmpegOhos.videoStop();
           this.status = '视频已停止';
         })
 
@@ -237,7 +238,7 @@ struct Index {
         .onClick(() => {
           this.hardwareOn = !this.hardwareOn;
           try {
-            native.decoderSetHardware(this.hardwareOn);
+            FFmpegOhos.decoderSetHardware(this.hardwareOn);
             this.status = `硬解开关已${this.hardwareOn ? '打开' : '关闭'}，重新点 Play 生效`;
           } catch (e) {
             this.status = `切换硬解失败: ${JSON.stringify(e)}`;
@@ -297,12 +298,12 @@ struct Index {
     try {
       const src = await this.ensureSample('play.m4a');
       hilog.info(DOMAIN, TAG, 'onPlay: 内置样例 path=%{public}s', src);
-      const openR = native.playerOpen(src);
+      const openR: NapiResult = FFmpegOhos.playerOpen(src);
       if (!openR.ok) {
         this.status = `打开失败: ${openR.data}`;
         return;
       }
-      const playR = native.playerPlay();
+      const playR: NapiResult = FFmpegOhos.playerPlay();
       if (!playR.ok) {
         this.status = `播放失败: ${playR.data}`;
         return;
@@ -318,7 +319,7 @@ struct Index {
   onStop(): void {
     try {
       this.stopPolling();
-      this.status = native.playerStop().data;
+      this.status = FFmpegOhos.playerStop().data;
       hilog.info(DOMAIN, TAG, 'onStop');
     } catch (e) {
       this.status = `异常: ${JSON.stringify(e)}`;
@@ -332,7 +333,7 @@ struct Index {
     // 否则 500ms 一次的轮询会把错误信息刷掉，看起来像"还在播旧音频"。
     this.stopPolling();
     try {
-      native.playerStop();
+      FFmpegOhos.playerStop();
     } catch (e) {
       hilog.warn(DOMAIN, TAG, 'playerStop before pick failed: %{public}s', JSON.stringify(e));
     }
@@ -377,13 +378,13 @@ struct Index {
     hilog.info(DOMAIN, TAG, 'imported local file: %{public}s', local);
 
     try {
-      const openR = native.playerOpen(local);
+      const openR: NapiResult = FFmpegOhos.playerOpen(local);
       if (!openR.ok) {
         this.status = `解码器打开失败：${openR.data}`;
         hilog.error(DOMAIN, TAG, 'playerOpen !ok: %{public}s', openR.data);
         return;
       }
-      const playR = native.playerPlay();
+      const playR: NapiResult = FFmpegOhos.playerPlay();
       hilog.info(DOMAIN, TAG, 'playerPlay -> ok=%{public}s', String(playR.ok));
       if (!playR.ok) {
         this.status = `播放启动失败：${playR.data}`;
@@ -446,7 +447,7 @@ struct Index {
   async runTranscode(format: string): Promise<void> {
     this.stopPolling();
     try {
-      native.playerStop();
+      FFmpegOhos.playerStop();
     } catch (e) {
       hilog.warn(DOMAIN, TAG, 'playerStop before transcode failed: %{public}s', JSON.stringify(e));
     }
@@ -461,7 +462,7 @@ struct Index {
       const outFile = fs.openSync(dst, fs.OpenMode.CREATE | fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
       try {
         hilog.info(DOMAIN, TAG, 'transcode start %{public}s -> %{public}s (%{public}s)', src, dst, format);
-        const res = native.transcodeTo(inFile.fd, outFile.fd, format);
+        const res: NapiResult = FFmpegOhos.transcodeTo(inFile.fd, outFile.fd, format);
         hilog.info(DOMAIN, TAG, 'transcode result ok=%{public}s data=%{public}s', String(res.ok), res.data);
         if (!res.ok) {
           this.status = `转码失败（${format}）: ${res.data}`;
@@ -471,9 +472,9 @@ struct Index {
         this.status = `转码成功（${format}）: ${st.size} B\n${dst}\n${res.data}`;
 
         // 立刻播放转码结果，证明产物可用
-        const openR = native.playerOpen(dst);
+        const openR: NapiResult = FFmpegOhos.playerOpen(dst);
         if (openR.ok) {
-          const playR = native.playerPlay();
+          const playR: NapiResult = FFmpegOhos.playerPlay();
           if (playR.ok) {
             this.status += '\n已开始播放转码结果';
             this.startPolling();
@@ -496,7 +497,7 @@ struct Index {
   async runTranscodeByPath(format: string): Promise<void> {
     this.stopPolling();
     try {
-      native.playerStop();
+      FFmpegOhos.playerStop();
     } catch (e) {
       hilog.warn(DOMAIN, TAG, 'playerStop before transcode failed: %{public}s', JSON.stringify(e));
     }
@@ -508,16 +509,16 @@ struct Index {
       const ext = format === 'aac' ? 'm4a' : format;
       const dst = `${ctx.filesDir}/bypath.${ext}`;
       hilog.info(DOMAIN, TAG, 'transcodeByPath %{public}s -> %{public}s (%{public}s)', src, dst, format);
-      const res = native.transcodeByPath(src, dst, format);
+      const res: NapiResult = FFmpegOhos.transcodeByPath(src, dst, format);
       if (!res.ok) {
         this.status = `路径转码失败（${format}）: ${res.data}`;
         return;
       }
       const st = fs.statSync(dst);
       this.status = `路径转码成功（${format}）: ${st.size} B\n${dst}\n${res.data}`;
-      const openR = native.playerOpen(dst);
+      const openR: NapiResult = FFmpegOhos.playerOpen(dst);
       if (openR.ok) {
-        const playR = native.playerPlay();
+        const playR: NapiResult = FFmpegOhos.playerPlay();
         if (playR.ok) {
           this.status += '\n已开始播放转码结果';
           this.startPolling();
@@ -548,7 +549,7 @@ struct Index {
       fs.writeSync(file.fd, data.buffer as ArrayBuffer);
       fs.closeSync(file);
       hilog.info(DOMAIN, TAG, 'video copied to sandbox: %{public}s', path);
-      const res = native.videoPlay(path, this.surfaceId, bufferMode, cropMode);
+      const res: NapiResult = FFmpegOhos.videoPlay(path, this.surfaceId, bufferMode, cropMode);
       this.status = res.ok ? `视频播放已启动(${bufferMode ? 'buffer' : 'surface'},${cropMode ? 'crop' : 'fit'}): ${res.data}` : `视频播放失败: ${res.data}`;
       hilog.info(DOMAIN, TAG, 'videoPlay ok=%{public}s', String(res.ok));
     } catch (e) {
@@ -564,13 +565,13 @@ struct Index {
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const dst = `${ctx.filesDir}/output.mp4`;
       this.status = 'M4.3 转码中…';
-      native.videoTranscode(src, dst, 'mp4');
+      FFmpegOhos.videoTranscode(src, dst, 'mp4');
       for (let i = 0; i < 240; i++) {
         await new Promise<void>((resolve) => setTimeout(resolve, 500));
-        const s = JSON.parse(native.videoTranscodeStatus().data) as Record<string, number>;
+        const s = JSON.parse(FFmpegOhos.videoTranscodeStatus().data) as Record<string, number>;
         if (s.state === 2) {
           this.status = `转码完成 ${s.size} bytes，播放 output.mp4`;
-          native.videoPlay(dst, this.surfaceId, false, false);
+          FFmpegOhos.videoPlay(dst, this.surfaceId, false, false);
           return;
         }
         if (s.state === 3) {
@@ -594,7 +595,7 @@ struct Index {
       const ctx = getContext(this) as common.UIAbilityContext;
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const dst = `${ctx.filesDir}/output.${format}`;
-      native.videoTranscode(src, dst, format);
+      FFmpegOhos.videoTranscode(src, dst, format);
       this.status = `M4.4 转码已启动: ${format} -> ${dst}`;
     } catch (e) {
       this.status = `格式转码异常: ${JSON.stringify(e)}`;
@@ -607,21 +608,21 @@ struct Index {
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
       const logo = await this.ensureSample('logo.png');
-      const pr = native.imageProbe(logo);
+      const pr: NapiResult = FFmpegOhos.imageProbe(logo);
       this.status = `LOGO ${pr.data}`;
       const dst = `${ctx.filesDir}/watermark.mp4`;
       this.status = 'M4.5 水印转码中…';
-      native.videoTranscode(src, dst,
+      FFmpegOhos.videoTranscode(src, dst,
         `watermark|${this.wmText}|${this.wmPosition}|${this.wmSize}|${this.wmColor}|${font}|${this.wmAlpha}|${this.wmBold ? 1 : 0}`,
         this.resolution,
         this.convertVolume,
         logo);
       for (let i = 0; i < 240; i++) {
         await new Promise<void>((resolve) => setTimeout(resolve, 500));
-        const s = JSON.parse(native.videoTranscodeStatus().data) as Record<string, number>;
+        const s = JSON.parse(FFmpegOhos.videoTranscodeStatus().data) as Record<string, number>;
         if (s.state === 2) {
           this.status = `水印完成 ${s.size} bytes`;
-          native.videoPlay(dst, this.surfaceId, false, false);
+          FFmpegOhos.videoPlay(dst, this.surfaceId, false, false);
           return;
         }
         if (s.state === 3) {
@@ -639,7 +640,7 @@ struct Index {
       const ctx = getContext(this) as common.UIAbilityContext;
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const dst = `${ctx.filesDir}/output.h264`;
-      const res = native.extractMedia(src, dst, 'video');
+      const res: NapiResult = FFmpegOhos.extractMedia(src, dst, 'video');
       this.status = res.ok ? `提取视频完成: ${res.data}` : `提取视频失败: ${res.data}`;
     } catch (e) {
       this.status = `提取视频异常: ${JSON.stringify(e)}`;
@@ -652,7 +653,7 @@ struct Index {
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const dst = `${ctx.filesDir}/output.aac`;
       this.status = 'M4.4 提取音频中…';
-      const res = native.extractMedia(src, dst, 'audio');
+      const res: NapiResult = FFmpegOhos.extractMedia(src, dst, 'audio');
       this.status = res.ok ? `提取完成: ${res.data}` : `提取失败: ${res.data}`;
     } catch (e) {
       this.status = `提取异常: ${JSON.stringify(e)}`;
@@ -662,7 +663,7 @@ struct Index {
   // M3.0：探测系统硬解能力（AAC/MP3/FLAC 的 capability、支持采样率、能否 Configure/Start）
   runHardwareProbe(): void {
     try {
-      const res = native.hardwareProbe();
+      const res: NapiResult = FFmpegOhos.hardwareProbe();
       this.status = res.ok ? `硬解探针完成，详见下方日志` : `探针失败: ${res.data}`;
       this.logText = res.ok ? res.data : res.data;
       hilog.info(DOMAIN, TAG, 'hardwareProbe ok=%{public}s', String(res.ok));
@@ -675,7 +676,7 @@ struct Index {
   // M4.0：探测系统视频硬解（H.264/H.265 capability、最大分辨率、能否创建解码器）
   runVideoProbe(): void {
     try {
-      const res = native.videoProbe();
+      const res: NapiResult = FFmpegOhos.videoProbe();
       this.status = res.ok ? `视频探针完成：${res.data}` : `视频探针失败: ${res.data}`;
       this.logText = res.ok ? res.data : res.data;
       hilog.info(DOMAIN, TAG, 'videoProbe ok=%{public}s', String(res.ok));
@@ -688,7 +689,7 @@ struct Index {
   startPolling(): void {
     this.stopPolling();
     this.timer = setInterval(() => {
-      this.status = native.playerStatus().data;
+      this.status = FFmpegOhos.playerStatus().data;
     }, 500);
   }
 
@@ -713,10 +714,10 @@ struct Index {
         fs.writeSync(file.fd, raw.buffer as ArrayBuffer);
         fs.closeSync(file);
 
-        const info: string = native.probe(src);
-        const stat: string = native.readPackets(src);
+        const info: string = FFmpegOhos.probe(src);
+        const stat: string = FFmpegOhos.readPackets(src);
         const wav = `${ctx.filesDir}/${name}.wav`;
-        const res: string = native.decodeToWav(src, wav);
+        const res: string = FFmpegOhos.decodeToWav(src, wav);
         out += `${name}\n  open:   ${info}\n  read:   ${stat}\n  decode: ${res}\n\n`;
       }
       this.logText = out;

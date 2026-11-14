@@ -1,0 +1,9 @@
+{
+  "name": "@ohos/ffmpeg_ohos",
+  "version": "0.1.0",
+  "description": "FFmpeg for HarmonyOS typed ArkTS facade",
+  "main": "Index.ets",
+  "types": "Index.d.ts",
+  "author": "",
+  "license": "LGPL-2.1-or-later"
+}
