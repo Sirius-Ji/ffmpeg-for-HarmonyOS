@@ -49,8 +49,9 @@
 目标不是toC的播放器 App，而是面向鸿蒙开发者的能被直接集成的三方库，最终进入 OpenHarmony 供应链（TPC / [tpc_c_cplusplus](https://gitee.com/openharmony-sig/tpc_c_cplusplus)）。
 
 - 上游：FFmpeg `n9.0`（commit `d32b387`），交叉编译到 `aarch64-linux-ohos` / `x86_64-linux-ohos`
-- 产物：带 SONAME 的动态库 + 完整头文件，**5 个 `.so`**（4 个 FFmpeg + `libmp3lame`），
-  CMake 集成成本 `64 KB` 级别（4 个 IMPORTED 目标 + `libmp3lame` 作为运行时依赖）
+- 产物：带 SONAME 的动态库 + 完整头文件，**7 个 `.so`**（6 个 FFmpeg：avcodec/avformat/avutil/swresample/avfilter/swscale + `libmp3lame`），
+  CMake 集成成本 `64 KB` 级别（6 个 IMPORTED 目标 + `libmp3lame` 作为运行时依赖）
+- 滤镜/缩放运行时：`libavfilter.so.12`、`libswscale.so.10`（drawtext / overlay / scale）
 - 许可：**LGPL-2.1-or-later**（未启用 GPL / nonfree），见 [NOTICE.md](NOTICE.md)
 - 状态：M0 交叉编译 ✅、M1 真机解码 ✅、M2 播放链路真机验证 ✅、v0.1.1 转码能力 ✅、**M3.0/M3.1 平台硬解已合入** ✅
 

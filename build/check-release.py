@@ -39,9 +39,9 @@ REQUIRED = {
 }
 
 # 发布包必须带的库（libavfilter 不发布；libmp3lame 是外部依赖）
-MUST_SHIP = ("avcodec", "avformat", "avutil", "swresample", "mp3lame")
-# 只禁“声称发布了 libavfilter”的写法；README 里说“已移除 libavfilter”是允许的
-BANNED_IN_README = ("libavfilter.so", "avfilter.so")
+MUST_SHIP = ("avcodec", "avformat", "avutil", "swresample", "avfilter", "swscale", "mp3lame")
+# avfilter/swscale 现在随包发布
+BANNED_IN_README = ()
 
 TAIL = {"decoder": "DECODER", "encoder": "ENCODER", "muxer": "MUXER",
         "demuxer": "DEMUXER", "bsf": "BSF"}
