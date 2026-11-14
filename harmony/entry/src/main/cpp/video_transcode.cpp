@@ -147,6 +147,124 @@ static std::vector<uint8_t> BuildAvcC(const std::vector<uint8_t> &sps,
     ed.insert(ed.end(), pps.begin(), pps.end());
     return ed;
 }
+
+static int MuxTsThenMp4(std::vector<OutPkt> &packets, AVCodecContext *venc,
+                        AVCodecContext *aenc, const std::string &dstPath) {
+    const std::string tsPath = dstPath + ".ts";
+    AVFormatContext *ts = nullptr;
+    if (avformat_alloc_output_context2(&ts, nullptr, "mpegts", tsPath.c_str()) < 0) return -1;
+    AVStream *vst = nullptr, *ast = nullptr;
+    if (venc) {
+        vst = avformat_new_stream(ts, nullptr);
+        avcodec_parameters_from_context(vst->codecpar, venc);
+        vst->time_base = AVRational{1, 90000};  // TS 标准时间基
+        vst->codecpar->codec_tag = 0;
+        OH_LOG_INFO(LOG_APP, "[vtrans] ts video codec=%{public}d extradata=%{public}d",
+                    (int)vst->codecpar->codec_id, vst->codecpar->extradata_size);
+        if (venc->extradata && venc->extradata_size > 0 &&
+            vst->codecpar->extradata == nullptr) {
+            vst->codecpar->extradata = (uint8_t *)av_mallocz(
+                venc->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
+            if (vst->codecpar->extradata) {
+                memcpy(vst->codecpar->extradata, venc->extradata, venc->extradata_size);
+                vst->codecpar->extradata_size = venc->extradata_size;
+            }
+        }
+    }
+    if (aenc) {
+        ast = avformat_new_stream(ts, nullptr);
+        avcodec_parameters_from_context(ast->codecpar, aenc);
+        ast->time_base = aenc->time_base;
+    }
+    if (avio_open(&ts->pb, tsPath.c_str(), AVIO_FLAG_WRITE) < 0 ||
+        avformat_write_header(ts, nullptr) < 0) {
+        avformat_free_context(ts);
+        return -2;
+    }
+    std::sort(packets.begin(), packets.end(),
+              [](const OutPkt &a, const OutPkt &b) { return a.when < b.when; });
+    int64_t lastVideoDts = -1;
+    int videoLog = 0;
+    for (auto &p : packets) {
+        AVStream *st = p.stream == 0 ? vst : ast;
+        if (!st) { av_packet_free(&p.pkt); continue; }
+        av_packet_rescale_ts(p.pkt, p.tb, st->time_base);
+        p.pkt->stream_index = st->index;
+        p.pkt->pos = -1;
+        if (p.stream == 0) {
+            if (p.pkt->dts <= lastVideoDts)
+                OH_LOG_WARN(LOG_APP, "[vtrans] DTS regress last=%{public}lld now=%{public}lld",
+                            (long long)lastVideoDts, (long long)p.pkt->dts);
+            lastVideoDts = p.pkt->dts;
+        }
+        int ret = av_interleaved_write_frame(ts, p.pkt);
+        if (p.stream == 0 && videoLog < 6) {
+            char e[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(ret, e, sizeof(e));
+            OH_LOG_INFO(LOG_APP, "[vtrans] ts pkt pts=%{public}lld dts=%{public}lld size=%{public}d key=%{public}d ret=%{public}d %{public}s",
+                        (long long)p.pkt->pts, (long long)p.pkt->dts, p.pkt->size,
+                        (p.pkt->flags & AV_PKT_FLAG_KEY) ? 1 : 0, ret, e);
+            videoLog++;
+        } else if (ret < 0) {
+            char e[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(ret, e, sizeof(e));
+            OH_LOG_ERROR(LOG_APP, "[vtrans] ts write ret=%{public}d %{public}s", ret, e);
+        }
+        av_packet_free(&p.pkt);
+    }
+    packets.clear();
+    av_write_trailer(ts);
+    avio_closep(&ts->pb);
+    avformat_free_context(ts);
+
+    // remux: TS -> MP4，-c copy 等价，由 FFmpeg 提取 extradata/转 AVCC
+    AVFormatContext *in = nullptr, *out = nullptr;
+    if (avformat_open_input(&in, tsPath.c_str(), nullptr, nullptr) < 0) return -3;
+    if (avformat_find_stream_info(in, nullptr) < 0) { avformat_close_input(&in); return -4; }
+    if (avformat_alloc_output_context2(&out, nullptr, "mp4", dstPath.c_str()) < 0) {
+        avformat_close_input(&in); return -5;
+    }
+    int vmap[8], amap[8];
+    for (int i = 0; i < 8; ++i) { vmap[i] = -1; amap[i] = -1; }
+    for (unsigned i = 0; i < in->nb_streams && i < 8; ++i) {
+        AVStream *src = in->streams[i];
+        if (src->codecpar->codec_type != AVMEDIA_TYPE_VIDEO &&
+            src->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) continue;
+        AVStream *dst = avformat_new_stream(out, nullptr);
+        avcodec_parameters_copy(dst->codecpar, src->codecpar);
+        dst->time_base = src->time_base;
+        dst->codecpar->codec_tag = 0;
+        if (src->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) vmap[i] = dst->index;
+        else amap[i] = dst->index;
+    }
+    if (avio_open(&out->pb, dstPath.c_str(), AVIO_FLAG_WRITE) < 0 ||
+        avformat_write_header(out, nullptr) < 0) {
+        avio_closep(&out->pb); avformat_free_context(out); avformat_close_input(&in); return -6;
+    }
+    AVPacket *pkt = av_packet_alloc();
+    int written = 0;
+    while (av_read_frame(in, pkt) >= 0) {
+        if (pkt->stream_index >= 0 && pkt->stream_index < 8 &&
+            (vmap[pkt->stream_index] >= 0 || amap[pkt->stream_index] >= 0)) {
+            AVStream *src = in->streams[pkt->stream_index];
+            AVStream *dst = out->streams[vmap[pkt->stream_index] >= 0
+                                             ? vmap[pkt->stream_index] : amap[pkt->stream_index]];
+            av_packet_rescale_ts(pkt, src->time_base, dst->time_base);
+            pkt->stream_index = dst->index;
+            pkt->pos = -1;
+            av_interleaved_write_frame(out, pkt);
+            written++;
+        }
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
+    av_write_trailer(out);
+    avio_closep(&out->pb);
+    avformat_free_context(out);
+    avformat_close_input(&in);
+    OH_LOG_INFO(LOG_APP, "[vtrans] remux packets=%{public}d", written);
+    return written > 0 ? 0 : -7;
+}
 }  // namespace
 
 std::string VideoTranscodeStatusJson() {
@@ -366,73 +484,10 @@ int VideoTranscodeToMp4(const std::string &srcPath, const std::string &dstPath,
             }
         }
 
-        // ---- mux ----
+        // ---- two-stage mux: AnnexB -> MPEG-TS -> MP4 remux ----
         if (!failed) {
-            OH_LOG_INFO(LOG_APP, "[vtrans] stage=10 mux packets=%{public}d", (int)packets.size());
-            // OH 编码器输出 AnnexB；mp4 需要 AVCC + avcC extradata
-            // 诊断：把编码器原始 AnnexB 包原封不动写成 .h264，隔离封装器
-            FILE *raw = fopen((dstPath + ".h264").c_str(), "wb");
-            if (raw) {
-                size_t rawBytes = 0;
-                for (auto &p : packets) {
-                    if (p.stream == 0 && p.pkt && p.pkt->size > 0) {
-                        fwrite(p.pkt->data, 1, (size_t)p.pkt->size, raw);
-                        rawBytes += (size_t)p.pkt->size;
-                    }
-                }
-                fclose(raw);
-                OH_LOG_INFO(LOG_APP, "[vtrans] raw h264=%{public}zu dst=%{public}s",
-                            rawBytes, (dstPath + ".h264").c_str());
-            }
-            std::vector<uint8_t> sps, pps;
-            for (auto &p : packets) {
-                if (p.stream == 0) AnnexBToAvcc(p.pkt, sps, pps);
-            }
-            if ((sps.empty() || pps.empty()) && venc && venc->extradata)
-                ParseAnnexBParams(venc->extradata, venc->extradata_size, sps, pps);
-            std::vector<uint8_t> avcc = BuildAvcC(sps, pps);
-            OH_LOG_INFO(LOG_APP, "[vtrans] stage=11 avcc extradata=%{public}d",
-                        (int)avcc.size());
-            if (avformat_alloc_output_context2(&out, nullptr, "mp4", dstPath.c_str()) < 0) failed = 11;
-            AVStream *vst = nullptr, *ast = nullptr;
-            if (!failed && venc) {
-                vst = avformat_new_stream(out, nullptr);
-                avcodec_parameters_from_context(vst->codecpar, venc);
-                vst->time_base = AVRational{1, 90000};
-                vst->avg_frame_rate = AVRational{24, 1};
-                vst->r_frame_rate = AVRational{24, 1};
-                if (!avcc.empty()) {
-                    vst->codecpar->extradata = (uint8_t *)av_mallocz(avcc.size() + AV_INPUT_BUFFER_PADDING_SIZE);
-                    if (vst->codecpar->extradata) {
-                        memcpy(vst->codecpar->extradata, avcc.data(), avcc.size());
-                        vst->codecpar->extradata_size = (int)avcc.size();
-                    }
-                }
-            }
-            if (!failed && aenc) {
-                ast = avformat_new_stream(out, nullptr);
-                avcodec_parameters_from_context(ast->codecpar, aenc);
-                ast->time_base = aenc->time_base;
-            }
-            if (!failed && (avio_open(&out->pb, dstPath.c_str(), AVIO_FLAG_WRITE) < 0 ||
-                            avformat_write_header(out, nullptr) < 0)) failed = 12;
-            if (!failed) {
-                std::sort(packets.begin(), packets.end(),
-                          [](const OutPkt &a, const OutPkt &b) { return a.when < b.when; });
-                for (auto &p : packets) {
-                    AVStream *st = p.stream == 0 ? vst : ast;
-                    if (!st) { av_packet_free(&p.pkt); continue; }
-                    av_packet_rescale_ts(p.pkt, p.tb, st->time_base);
-                    p.pkt->stream_index = st->index;
-                    p.pkt->pos = -1;
-                    av_interleaved_write_frame(out, p.pkt);
-                    av_packet_free(&p.pkt);
-                }
-                packets.clear();
-                av_write_trailer(out);
-            }
+            if (MuxTsThenMp4(packets, venc, aenc, dstPath) != 0) failed = 11;
         }
-
         if (out) {
             if (out->pb) avio_closep(&out->pb);
             avformat_free_context(out);
