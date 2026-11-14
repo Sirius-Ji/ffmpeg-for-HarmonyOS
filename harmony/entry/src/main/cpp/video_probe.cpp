@@ -31,6 +31,7 @@ struct VideoResult {
     int32_t maxHeight = 0;
     int32_t maxFps = 0;
     bool creatable = false;
+    bool surfaceBFrameRisk = false;
 };
 
 VideoResult ProbeVideo(const char *codec, const char *mime) {
@@ -44,6 +45,10 @@ VideoResult ProbeVideo(const char *codec, const char *mime) {
         const char *name = OH_AVCapability_GetName(cap);
         out.capabilityName = name != nullptr ? name : "";
         out.hardware = OH_AVCapability_IsHardware(cap);
+        // M4.2.3 实测：海思 OMX 的 surface+sync/async 路径会固定少吐约 3 个 B 帧。
+        // 仅作风险标记，不影响是否能创建解码器。
+        out.surfaceBFrameRisk =
+            out.hardware && out.capabilityName.find("hisi") != std::string::npos;
 
         OH_AVRange range{};
         if (OH_AVCapability_GetVideoWidthRange(cap, &range) == AV_ERR_OK) {
@@ -92,7 +97,10 @@ int VideoProbe(std::string *json) {
            << ",\"creatable\":" << (v.creatable ? "true" : "false")
            << ",\"supports720p\":" << (p720 ? "true" : "false")
            << ",\"supports1080p\":" << (p1080 ? "true" : "false")
-           << ",\"supports4K\":" << (p4k ? "true" : "false") << "}";
+           << ",\"supports4K\":" << (p4k ? "true" : "false")
+           << ",\"surfaceBFrameRisk\":" << (v.surfaceBFrameRisk ? "true" : "false")
+           << ",\"knownIssue\":\""
+           << (v.surfaceBFrameRisk ? "surface-bframe-drop" : "") << "\"}";
 
         OH_LOG_INFO(LOG_APP,
                     "[vprobe] codec=%{public}s mime=%{public}s cap=%{public}d hw=%{public}d "
