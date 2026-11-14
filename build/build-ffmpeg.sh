@@ -25,6 +25,19 @@ fi
 SRC="$ROOT/third_party/ffmpeg"
 OUT="$ROOT/prebuilt"
 LOGS="$ROOT/build-logs"
+
+# FFmpeg source patch: explicitly disable H.264 encoder B-frames (third_party is untracked)
+FF_BFRAME_PATCH="$ROOT/build/patches/ffmpeg-close-bframes.patch"
+if [ -f "$FF_BFRAME_PATCH" ]; then
+  if [ -n "$GIT_BIN" ] && ( cd "$SRC" && "$GIT_BIN" apply --check "$FF_BFRAME_PATCH" >/dev/null 2>&1 ); then
+    ( cd "$SRC" && "$GIT_BIN" apply "$FF_BFRAME_PATCH" )
+  elif [ -n "$GIT_BIN" ] && ( cd "$SRC" && "$GIT_BIN" apply -R --check "$FF_BFRAME_PATCH" >/dev/null 2>&1 ); then
+    :
+  else
+    echo "FFmpeg B-frame patch neither applies nor is already applied" >&2
+    exit 1
+  fi
+fi
 JOBS=${JOBS:-$(nproc)}
 LLVM="$NDK/llvm/bin"
 SYSROOT="$NDK/sysroot"

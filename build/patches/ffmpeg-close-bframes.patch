@@ -1,0 +1,14 @@
+diff --git a/libavcodec/ohenc.c b/libavcodec/ohenc.c
+index 76bddd4..facc674 100644
+--- a/libavcodec/ohenc.c
++++ b/libavcodec/ohenc.c
+@@ -151,6 +151,9 @@ static int oh_encode_set_format(OHCodecEncContext *s, AVCodecContext *avctx)
+         }
+     }
+     OH_AVFormat_SetLongValue(format, OH_MD_KEY_BITRATE, avctx->bit_rate);
++    // Explicitly disable B-frames to keep PTS/DTS order stable
++    OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENCODER_ENABLE_B_FRAME, 0);
++    OH_AVFormat_SetIntValue(format, OH_MD_KEY_VIDEO_ENCODER_MAX_B_FRAMES, 0);
+ 
+     if (avctx->gop_size > 0) {
+         if (avctx->framerate.num > 0 && avctx->framerate.den > 0) {
