@@ -30,11 +30,11 @@ REQUIRED = {
     "decoder": [
         "h264_oh", "hevc_oh", "h264", "hevc",
         "aac", "ac3", "eac3", "alac", "ape", "dca", "flac", "mp3", "mp3float",
-        "opus", "pcm_s16le", "pcm_s24le", "pcm_s32le", "wmav2",
+        "opus", "pcm_s16le", "pcm_s24le", "pcm_s32le", "wmav2", "png", "mjpeg",
     ],
     "encoder": ["aac", "alac", "flac", "libmp3lame", "pcm_s16le", "pcm_s24le", "opus", "h264_oh", "hevc_oh"],
     "muxer": ["mp4", "mov", "ipod", "mp3", "flac", "wav", "matroska", "adts", "ogg", "opus", "mpegts", "flv"],
-    "demuxer": ["mov", "matroska", "ogg", "flac", "ape", "dsf", "wav", "mp3", "aac", "tta", "wv", "caf", "asf", "mpegts", "flv"],
+    "demuxer": ["mov", "matroska", "ogg", "flac", "ape", "dsf", "wav", "mp3", "aac", "tta", "wv", "caf", "asf", "mpegts", "flv", "image2"],
     "bsf": ["aac_adtstoasc", "extract_extradata", "h264_mp4toannexb"],
 }
 
