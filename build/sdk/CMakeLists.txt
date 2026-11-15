@@ -1,0 +1,41 @@
+cmake_minimum_required(VERSION 3.16)
+project(ffmpeg_ohos_sdk CXX)
+
+# Usage:
+#   add_subdirectory(ffmpeg-ohos-sdk)
+#   target_link_libraries(your_target PRIVATE ffmpeg_ohos_sdk)
+#
+# Or set FFMPEG_OHOS_SDK_ROOT and include this file.
+
+set(_sdk "${CMAKE_CURRENT_SOURCE_DIR}")
+if(NOT OHOS_ARCH)
+  set(OHOS_ARCH arm64-v8a)
+endif()
+set(_lib "${_sdk}/lib/${OHOS_ARCH}")
+
+add_library(ffmpeg_ohos_sdk INTERFACE)
+target_include_directories(ffmpeg_ohos_sdk INTERFACE "${_sdk}/include")
+target_link_directories(ffmpeg_ohos_sdk INTERFACE "${_lib}")
+
+foreach(_name avcodec avformat avutil swresample avfilter swscale mp3lame ffz)
+  add_library(${_name} SHARED IMPORTED)
+  if(_name STREQUAL avcodec)
+    set(_file "${_lib}/libavcodec.so.63")
+  elseif(_name STREQUAL avformat)
+    set(_file "${_lib}/libavformat.so.63")
+  elseif(_name STREQUAL avutil)
+    set(_file "${_lib}/libavutil.so.61")
+  elseif(_name STREQUAL swresample)
+    set(_file "${_lib}/libswresample.so.7")
+  elseif(_name STREQUAL avfilter)
+    set(_file "${_lib}/libavfilter.so.12")
+  elseif(_name STREQUAL swscale)
+    set(_file "${_lib}/libswscale.so.10")
+  elseif(_name STREQUAL mp3lame)
+    set(_file "${_lib}/libmp3lame.so.0")
+  else()
+    set(_file "${_lib}/libffz.so.1")
+  endif()
+  set_target_properties(${_name} PROPERTIES IMPORTED_LOCATION "${_file}" INTERFACE_INCLUDE_DIRECTORIES "${_sdk}/include")
+  target_link_libraries(ffmpeg_ohos_sdk INTERFACE ${_name})
+endforeach()

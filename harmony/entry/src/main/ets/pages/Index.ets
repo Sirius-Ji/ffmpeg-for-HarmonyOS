@@ -3,8 +3,8 @@ import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 // NAPI 模块：libentry.so，C 侧 nm_modname = "entry"
-import { FFmpegOhos } from '@ohos/ffmpeg_ohos';
-import type { NapiResult } from '@ohos/ffmpeg_ohos';
+import { FFmpegOhos } from '@sirius/ffmpeg_ohos';
+import type { NapiResult } from '@sirius/ffmpeg_ohos';
 
 const DOMAIN = 0xFF01;
 const TAG = 'FFMUI';

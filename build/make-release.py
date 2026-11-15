@@ -26,7 +26,7 @@ CHECKER = os.path.join(ROOT, "build", "check-release.py")
 ABIS = ("arm64-v8a", "x86_64")
 
 # v0.1.1：libavfilter 不随包发布；libmp3lame 是 MP3 编码的运行时依赖，必须一起发
-LIB_NAMES = ["avcodec", "avformat", "avutil", "swresample", "avfilter", "swscale", "mp3lame"]
+LIB_NAMES = ["avcodec", "avformat", "avutil", "swresample", "avfilter", "swscale", "mp3lame", "ffz"]
 LIB_RE = re.compile(r"^lib(%s)\.so\.(\d+)$" % "|".join(LIB_NAMES))
 
 COMPONENTS = {

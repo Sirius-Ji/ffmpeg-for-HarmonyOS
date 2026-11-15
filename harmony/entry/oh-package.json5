@@ -6,6 +6,6 @@
   "author": "",
   "license": "LGPL-2.1-or-later",
   "dependencies": {
-    "@ohos/ffmpeg_ohos": "file:../ffmpeg_ohos"
+    "@sirius/ffmpeg_ohos": "file:../ffmpeg_ohos"
   }
 }

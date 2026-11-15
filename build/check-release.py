@@ -39,7 +39,7 @@ REQUIRED = {
 }
 
 # 发布包必须带的库（libavfilter 不发布；libmp3lame 是外部依赖）
-MUST_SHIP = ("avcodec", "avformat", "avutil", "swresample", "avfilter", "swscale", "mp3lame")
+MUST_SHIP = ("avcodec", "avformat", "avutil", "swresample", "avfilter", "swscale", "mp3lame", "ffz")
 # avfilter/swscale 现在随包发布
 BANNED_IN_README = ()
 

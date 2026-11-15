@@ -2,6 +2,28 @@
 
 所有值得注意的变更都记在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## v0.2.1（2026-11-15）
+
+M5.1 工程化修复：双形态发布（HAR + ZIP SDK），并清理审计发现的依赖缺陷。
+
+### Added
+
+- **ZIP SDK**：`ffmpeg-ohos-sdk-v0.2.1.zip`，含 `include/`、`lib/<abi>/`、示例 `CMakeLists.txt`、`BUILD-INFO.txt`。
+- **HAR 根目录 `BUILD-INFO.txt`**：ABI、SONAME、sha256 清单。
+- **23 个类型化 ArkTS 方法**（此前 CHANGELOG 误写 20 个）。
+
+### Fixed
+
+- **libc++_shared.so 冗余**：从 HAR 排除，宿主 App 使用自身 NDK 版本。
+- **libz 缺陷**：zlib 1.3.1 重编为 `libffz.so.1`（`-soname libffz.so.1`），16KB 页对齐；`libavcodec.so.63` 的 NEEDED 更新为 `libffz.so.1`。
+- **Scope**：`@ohos/ffmpeg_ohos` → `@sirius/ffmpeg_ohos`，避免占用官方保留 scope。
+- **版本/构建模式**：统一 `0.2.1`，HAR 为 release 构建（`DEBUG=false`），不携带 `com.example` bundle 元数据。
+
+### Changed
+
+- README Quick Start 改为 `@sirius/ffmpeg_ohos`，删除旧版 libavfilter 移除说明。
+- 发布集从 7 库变为 8 库：avcodec / avformat / avutil / swresample / avfilter / swscale / mp3lame / ffz。
+
 ## v0.2.0-m5.0-har（2026-11-15）
 
 M5.0 把底层 FFmpeg 基建封装为可 `ohpm` 引用的 HAR 模块，entry 退化为纯 ArkTS 测试壳。
@@ -9,7 +31,7 @@ M5.0 把底层 FFmpeg 基建封装为可 `ohpm` 引用的 HAR 模块，entry 退
 ### Added
 
 - **`@ohos/ffmpeg_ohos` HAR 模块**：自带 arm64-v8a / x86_64 native 编译，HAR 约 18.5MB。
-- **类型化 ArkTS API**：`FFmpegOhos.videoTranscode` / `videoPlay` / `extractMedia` / `setVolume` / `videoProbe` / `imageProbe` 等 20 个方法。
+- **类型化 ArkTS API**：`FFmpegOhos.videoTranscode` / `videoPlay` / `extractMedia` / `setVolume` / `videoProbe` / `imageProbe` 等 23 个方法。
 - **图片水印**：PNG/JPEG 解码、RGBA 转换、双输入 `overlay`（右下角 `x=W-w-20:y=H-h-20`）。
 - **文字水印**：drawtext 支持文字、位置、字号、颜色、透明度、加粗描边。
 - **分辨率控制**：`original` / `720p` / `1080p`，filter graph `buffer -> scale -> overlay -> drawtext -> format=nv12`。
@@ -19,7 +41,7 @@ M5.0 把底层 FFmpeg 基建封装为可 `ohpm` 引用的 HAR 模块，entry 退
 
 - **海思两段式封装花屏**：AnnexB → MPEG-TS → FFmpeg 原生 remux → MP4，替代手写 AVCC。
 - **单声道 -3dB“吞音”**：强制 mono→stereo 导致瞬态峰值 31517→22286；改为跟随源声道后恢复 31517。
-- **假 zlib 桩**：OHOS 系统无 `/system/lib64/libz.so`，sysroot 仅 8.9KB 桩，PNG `avcodec_open2` 返回 `AVERROR_EXTERNAL`；交叉编译 zlib 1.3.1（arm64 105KB / x86_64 107KB）并随 HAR 打包。
+- **假 zlib 桩**：OHOS 系统无 `/system/lib64/libz.so`，sysroot 仅 8.9KB 桩，PNG `avcodec_open2` 返回 `AVERROR_EXTERNAL`；交叉编译 zlib 1.3.1 并随 HAR 打包（v0.2.1 起重命名为 `libffz.so.1`）。
 - **EOS drain**：滤镜发 NULL/EOS，buffersink 抽空，编码器 flush 后再 mux，修复 720p 卡在 stage=12。
 - **scale filter EINVAL**：`scale=1280:720` 改为命名参数 `w=1280:h=720`。
 - **Hvigor 缓存旧 libentry**：通过 `M4.6_BUILD_VER` 特征码与强清 `.cxx/build` 定位。
@@ -27,8 +49,8 @@ M5.0 把底层 FFmpeg 基建封装为可 `ohpm` 引用的 HAR 模块，entry 退
 ### Changed
 
 - entry 的 C++ 与 `.so` 全部迁入 `ffmpeg_ohos`，entry 只保留 ArkTS UI。
-- FFmpeg 增加 `png` / `mjpeg` 解码器与 `image2` demuxer，链接系统 `libz`。
-- release 包 7 库：avcodec / avformat / avutil / swresample / avfilter / swscale / mp3lame。
+- FFmpeg 增加 `png` / `mjpeg` 解码器与 `image2` demuxer，链接真 zlib（v0.2.1 起为 `libffz`）。
+- release 包 8 库：avcodec / avformat / avutil / swresample / avfilter / swscale / mp3lame / ffz。
 
 ### License
 

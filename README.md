@@ -1,8 +1,9 @@
 # ffmpeg-for-HarmonyOS
 
-> **v0.2.0 · M5.0 HAR**
+> **v0.2.1 · M5.1 双形态**
 >
-> 现可直接以 `ffmpeg_ohos.har` 集成（约 **18.5 MB**，含 arm64-v8a / x86_64 native）。
+> 同时提供 ArkTS HAR（`ffmpeg_ohos.har`，约 18 MB）和 C++ ZIP SDK
+> （`ffmpeg-ohos-sdk-v0.2.1.zip`，含 include/lib/CMake/BUILD-INFO）。
 > 视频硬解、零拷贝渲染、文字/图片水印、音视频多格式转码均已真机验证。
 > **API 仍可能变更**，欢迎试用、集成、提 Issue 和 PR。
 
@@ -11,12 +12,12 @@
 ```json5
 // entry/oh-package.json5
 "dependencies": {
-  "@ohos/ffmpeg_ohos": "file:../ffmpeg_ohos"
+  "@sirius/ffmpeg_ohos": "file:../ffmpeg_ohos"
 }
 ```
 
 ```ts
-import { FFmpegOhos } from '@ohos/ffmpeg_ohos';
+import { FFmpegOhos } from '@sirius/ffmpeg_ohos';
 
 // 文字 + 图片水印转码
 FFmpegOhos.videoTranscode(
@@ -64,15 +65,16 @@ HAR 自带 `libentry.so` 与 FFmpeg 动态库，无需在 entry 再配置 `exter
 - **全新转码能力**：打通底层转码链路，支持输出 **AAC**、**MP3** 和 **Opus** 三种主流音频格式。
 - **引入 LAME 引擎**：为了解决 FFmpeg 无原生 MP3 编码器的问题，已成功交叉编译并集成 `libmp3lame.so.0`。
 - **Demo 交互升级**：应用内新增三个转码测试按钮，支持一键“解码→重采样→编码→封装”，并在转码后自动播放，真机实测三种格式全部完美运行。
-- **细节修复**：补全 `mp3`、`pcm_s24le` 等解码器白名单；彻底移除冗余的 `libavfilter` 以精简体积。
+- **细节修复**：补全 `mp3`、`pcm_s24le` 等解码器白名单；加入 `libavfilter`/`libswscale` 支持 `drawtext`、`overlay`、`scale`。
 
 可开箱即用的面向 **OpenHarmony / HarmonyOS NEXT** 的纯血鸿蒙 FFmpeg 音视频基础库（**基座**）。
 目标不是toC的播放器 App，而是面向鸿蒙开发者的能被直接集成的三方库，最终进入 OpenHarmony 供应链（TPC / [tpc_c_cplusplus](https://gitee.com/openharmony-sig/tpc_c_cplusplus)）。
 
 - 上游：FFmpeg `n9.0`（commit `d32b387`），交叉编译到 `aarch64-linux-ohos` / `x86_64-linux-ohos`
-- 产物：带 SONAME 的动态库 + 完整头文件，**7 个 `.so`**（6 个 FFmpeg：avcodec/avformat/avutil/swresample/avfilter/swscale + `libmp3lame`），
-  CMake 集成成本 `64 KB` 级别（6 个 IMPORTED 目标 + `libmp3lame` 作为运行时依赖）
+- 产物：带 SONAME 的动态库 + 完整头文件，**8 个 `.so`**（6 个 FFmpeg：avcodec/avformat/avutil/swresample/avfilter/swscale + `libmp3lame` + `libffz`），
+  CMake 集成成本 `64 KB` 级别（8 个 IMPORTED 目标，`libffz` 是重命名后的 zlib）
 - 滤镜/缩放运行时：`libavfilter.so.12`、`libswscale.so.10`（drawtext / overlay / scale）
+- zlib 运行时：`libffz.so.1`（SONAME 已重命名，避免与宿主 zlib 冲突）
 - 许可：**LGPL-2.1-or-later**（未启用 GPL / nonfree），见 [NOTICE.md](NOTICE.md)
 - 状态：M0 交叉编译 ✅、M1 真机解码 ✅、M2 播放链路真机验证 ✅、v0.1.1 转码能力 ✅、**M3.0/M3.1 平台硬解已合入** ✅
 
@@ -179,12 +181,12 @@ entry/libs/arm64-v8a/libmp3lame.so.0      # 强制依赖：缺了它整个 NAPI 
 **三条硬性约束**（踩过的坑，别重犯）：
 
 1. 文件名必须带大版本号（`libavcodec.so.63`），改成 `libavcodec.so` 会加载失败——`SONAME` 是前者。
-2. `libc++_shared.so` 由 hvigor 自动打包；如果你把 `.so` 放在别处，ABI 目录要自己保证一致。
-3. 库是 **16 KB 页对齐**（`PT_LOAD align = 0x4000`），别用老工具链重链成 4 KB。
+2. `libc++_shared.so` **不再随 HAR/SDK 发布**，由宿主 App 用自身 NDK 版本提供，避免 ABI 冲突。
+3. `libz` 已重命名为 `libffz.so.1`（SONAME `libffz.so.1`），`libavcodec.so.63` 的 NEEDED 指向它。
+4. 库是 **16 KB 页对齐**（`PT_LOAD align = 0x4000`），别用老工具链重链成 4 KB。
 
-> **Breaking Change（v0.1.1 起）**：`libavfilter` 已彻底移除（库、头文件、`include/libavfilter/` 都没有了）。
-> 旧代码里的 `#include <libavfilter/avfilter.h>` 和 `ff_avfilter` 目标会直接编译失败，
-> 完整迁移说明见 [CHANGELOG.md](CHANGELOG.md)。
+> **v0.2.1 说明**：`libavfilter` 已随包发布，旧版“彻底移除”说明作废；
+> C++ 集成请使用 ZIP SDK 的 `include/`、`lib/<abi>/` 和示例 `CMakeLists.txt`。
 
 C++ 侧的参考实现（解封装 → 软解 → 重采样 → OHAudio 播放）在
 [`harmony/entry/src/main/cpp/decoder.cpp`](harmony/entry/src/main/cpp/decoder.cpp) 和
