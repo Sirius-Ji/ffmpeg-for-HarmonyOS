@@ -160,7 +160,7 @@ def main():
 
     # 打包后自动校验；失败就删产物、非零退出
     print("\n== 运行 check-release.py ==")
-    rc = subprocess.call([sys.executable, CHECKER])
+    rc = subprocess.call([sys.executable, CHECKER, "--source-only"])
     if rc != 0:
         print("\n!! 校验失败，删除本次生成的产物")
         for path, _size in made:

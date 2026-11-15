@@ -382,6 +382,11 @@ def main():
     print(f"   检查压缩包 : {'否' if no_zip else '是'}")
     print(f"   CMake 消费 : {'否' if no_zip else '是'}")
 
+    if not no_zip:
+        artifact_gate = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check-artifacts.py")
+        if subprocess.call([sys.executable, artifact_gate]) != 0:
+            failures.append("M5.2 artifact gates failed")
+
     if failures:
         print("\n!! 校验失败：")
         for f in failures:

@@ -2,6 +2,31 @@
 
 所有值得注意的变更都记在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## v0.2.2（2026-11-15）
+
+M5.2 深度工程重塑：全量重链、单一源打包、发布门禁与合规补全。
+
+### Fixed
+
+- **P0 增量残留**：`build/build-ffmpeg.sh` 每次编译前强删 `build/<abi>`；libavformat/libavcodec 全部 NEEDED 统一为 `libffz.so.1`，不再出现 `libz.so`。
+- **P0 哈希不一致**：HAR、SDK ZIP、per-ABI ZIP 全部基于同一份 `prebuilt/<abi>`；HAR 与 ZIP 的 BUILD-INFO 由实际打包字节实时生成。
+- **libc++_shared.so**：HAR 继续排除，宿主 App 提供匹配的 NDK C++ runtime。
+
+### Added
+
+- **发布门禁**：`check-release.py` 调用 `check-artifacts.py`：
+  - 所有 `.so` 的 DT_NEEDED 必须在包内或系统/宿主白名单内；`libz.so` 直接失败。
+  - HAR/SDK 的 BUILD-INFO 与实际文件逐字节 sha256 匹配。
+  - `SHA256SUMS.txt` 覆盖 Release 目录所有文件（HAR、SDK ZIP、两个 per-ABI ZIP、所有 BUILD-INFO）。
+- **合规文件**：`LICENSES/FreeType-FTL.txt`、`LICENSES/HarfBuzz-MIT.txt`、`LICENSES/FFmpeg-LGPL-2.1.txt`；SDK ZIP 包含 `NOTICE.md` 与 `LICENSES/`。
+- **NOTICE.md**：更新 8 库清单、静态链接 freetype/harfbuzz、含 png/mjpeg/image2/avfilter 的准确编译开关。
+
+### Changed
+
+- 版本统一 `0.2.2`；HAR release 构建 `DEBUG=false`，无 `com.example` bundle 元数据。
+- README ABI 承诺补全 `.so.12` / `.so.10` / `.so.0` / `.so.1`。
+- 双形态包：`ffmpeg_ohos-v0.2.2.har`、`ffmpeg-ohos-sdk-v0.2.2.zip`。
+
 ## v0.2.1（2026-11-15）
 
 M5.1 工程化修复：双形态发布（HAR + ZIP SDK），并清理审计发现的依赖缺陷。

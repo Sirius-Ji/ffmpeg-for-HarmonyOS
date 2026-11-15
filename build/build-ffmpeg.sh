@@ -83,6 +83,7 @@ build_one() {
   local tdir bdir
   tdir=$(wrapper "$arch" "$triple")
   bdir="$ROOT/build/$abi"
+  rm -rf "$bdir"
   mkdir -p "$bdir"
   cd "$bdir"
 

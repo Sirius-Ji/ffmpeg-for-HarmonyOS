@@ -1,9 +1,10 @@
 # ffmpeg-for-HarmonyOS
 
-> **v0.2.1 · M5.1 双形态**
+> **v0.2.2 · M5.2 单一源构建**
 >
-> 同时提供 ArkTS HAR（`ffmpeg_ohos.har`，约 18 MB）和 C++ ZIP SDK
-> （`ffmpeg-ohos-sdk-v0.2.1.zip`，含 include/lib/CMake/BUILD-INFO）。
+> 同时提供 ArkTS HAR（`ffmpeg_ohos.har`）和 C++ ZIP SDK
+> （`ffmpeg-ohos-sdk-v0.2.2.zip`，含 include/lib/CMake/BUILD-INFO/LICENSES）。
+> 全量强清重链，HAR 与 ZIP 均来自同一份 `prebuilt/<abi>` 字节。
 > 视频硬解、零拷贝渲染、文字/图片水印、音视频多格式转码均已真机验证。
 > **API 仍可能变更**，欢迎试用、集成、提 Issue 和 PR。
 
@@ -30,8 +31,11 @@ FFmpegOhos.videoTranscode(
 HAR 自带 `libentry.so` 与 FFmpeg 动态库，无需在 entry 再配置 `externalNativeOptions`。
 
 
-> **ABI 稳定性承诺：** 本库锁定 SONAME 为 `.so.63` / `.so.61` / `.so.7`。
-> 若未来 FFmpeg 升级至 n10，SONAME 发生变更将视为**破坏性更新**，需升级 **major 版本**。
+> **ABI 稳定性承诺：** 本库锁定 SONAME 为 `.so.63`（avcodec/avformat）、
+> `.so.61`（avutil）、`.so.7`（swresample）、`.so.12`（avfilter）、
+> `.so.10`（swscale）、`.so.0`（mp3lame）、`.so.1`（libffz）。
+> 任一 SONAME 变更视为**破坏性更新**，需升级 major 版本；升级 FFmpeg
+> n10 或 zlib 主版本时必须重新核对整条 NEEDED 链。
 
 ## 🚀 v0.1.5 更新亮点
 
