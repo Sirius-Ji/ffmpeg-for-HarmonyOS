@@ -1098,6 +1098,7 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                                 nv->pts -= trimStartPts;
                             }
                             nv->pts = (int64_t)(nv->pts * 1000.0 * srcRate.den / srcRate.num + 0.5);
+                            if (plan.speed > 0.0) nv->pts = (int64_t)(nv->pts / plan.speed + 0.5);
                             AVFrame *filtered = nullptr;
                             AVFrame *sendFrame = nv;
                             if (wmOk) {
