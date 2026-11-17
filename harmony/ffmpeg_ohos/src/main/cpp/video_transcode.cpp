@@ -147,6 +147,7 @@ struct VideoPlan {
     double pipEnableEnd = 6.0;
     std::string subtitlePath;
     std::string fontsDir;
+    std::string subtitleStyle;
 };
 
 static bool HasJsonKey(const std::string &j, const char *key) {
@@ -207,6 +208,7 @@ static VideoPlan ParseVideoPlan(const std::string &j) {
     p.pipEnableEnd = JsonNum(j, "pipEnableEnd", 6.0);
     p.subtitlePath = JsonStr(j, "subtitlePath", "");
     p.fontsDir = JsonStr(j, "fontsDir", "");
+    p.subtitleStyle = JsonStr(j, "subtitleStyle", "");
     return p;
 }
 
@@ -517,12 +519,20 @@ public:
 
         char sa[768];
         if (!plan.subtitlePath.empty()) {
-            if (!plan.fontsDir.empty())
-                snprintf(sa, sizeof(sa), "filename=%s:fontsdir=%s:force_style=FontName=Source Han Sans CN",
-                         plan.subtitlePath.c_str(), plan.fontsDir.c_str());
-            else
-                snprintf(sa, sizeof(sa), "filename=%s:force_style=FontName=Source Han Sans CN",
-                         plan.subtitlePath.c_str());
+            if (!plan.fontsDir.empty()) {
+                if (!plan.subtitleStyle.empty())
+                    snprintf(sa, sizeof(sa), "filename=%s:fontsdir=%s:force_style=%s",
+                             plan.subtitlePath.c_str(), plan.fontsDir.c_str(), plan.subtitleStyle.c_str());
+                else
+                    snprintf(sa, sizeof(sa), "filename=%s:fontsdir=%s",
+                             plan.subtitlePath.c_str(), plan.fontsDir.c_str());
+            } else {
+                if (!plan.subtitleStyle.empty())
+                    snprintf(sa, sizeof(sa), "filename=%s:force_style=%s",
+                             plan.subtitlePath.c_str(), plan.subtitleStyle.c_str());
+                else
+                    snprintf(sa, sizeof(sa), "filename=%s", plan.subtitlePath.c_str());
+            }
             if (!add(&subs_, "subtitles", sa)) return false;
         }
 

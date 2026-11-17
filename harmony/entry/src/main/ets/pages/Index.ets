@@ -232,12 +232,12 @@ struct Index {
       TextInput({ text: this.fontsDir, placeholder: '字体目录（留空用 filesDir）' })
         .fontSize(12)
         .onChange((v: string) => { this.fontsDir = v; })
-      Button('字幕测试（SRT + PiP）')
+      Button('SRT force 审计')
         .fontSize(13)
         .enabled(!this.busy)
         .onClick(() => { this.subtitleTest(); })
 
-      Button('字幕测试（ASS + PiP）')
+      Button('ASS Style 审计')
         .fontSize(13)
         .enabled(!this.busy)
         .onClick(() => { this.subtitleTest(true); })
@@ -635,18 +635,20 @@ struct Index {
       const ctx = getContext(this) as common.UIAbilityContext;
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
-      const subName = ass ? 'subs_style.ass' : 'subs.srt';
+      const subName = ass ? 'subs_audit.ass' : 'subs_force.srt';
       await this.ensureSample(subName);
-      const dst = `${ctx.filesDir}/${ass ? 'v03_sub_ass.mp4' : 'v03_sub.mp4'}`;
+      const dst = `${ctx.filesDir}/${ass ? 'audit_ass.mp4' : 'audit_srt.mp4'}`;
       const subPath = this.subtitlePath.length > 0 ? this.subtitlePath : `${ctx.filesDir}/${subName}`;
       const fonts = this.fontsDir.length > 0 ? this.fontsDir : ctx.filesDir;
-      const opts = '{"trimStart":5,"trimEnd":15,"cropW":640,"cropH":480,' +
+      const style = ass ? '' : 'FontName=Source Han Sans CN,FontSize=24,PrimaryColour=&H00FFFFFF&,Outline=1';
+      const opts = '{"trimStart":5,"trimEnd":15,' +
         '"brightness":0.08,"contrast":1.10,"saturation":1.15,' +
-        '"textX":"(w-tw)/2","textY":"(h-th)/2",' +
+        '"textX":"20","textY":"20",' +
         '"pipPath":"' + src + '","pipEnableStart":2,"pipEnableEnd":6,' +
         '"subtitlePath":"' + subPath + '","fontsDir":"' + fonts + '",' +
+        '"subtitleStyle":"' + style + '",' +
         '"speed":1.25,"atempo":1.25}';
-      this.status = '字幕测试中…';
+      this.status = '字幕审计中…';
       FFmpegOhos.videoTranscode(src, dst,
         `watermark|FFmpeg-ohos|center|48|white|${font}|100|1`,
         '720p', 1.0, '', opts);
@@ -654,12 +656,12 @@ struct Index {
         await new Promise<void>((resolve) => setTimeout(resolve, 500));
         const s = JSON.parse(FFmpegOhos.videoTranscodeStatus().data) as Record<string, number>;
         if (s.state === 2) {
-          this.status = `字幕测试完成 ${s.size} bytes`;
+          this.status = `字幕审计完成 ${s.size} bytes`;
           FFmpegOhos.videoPlay(dst, this.surfaceId, false, false);
           return;
         }
         if (s.state === 3) {
-          this.status = `字幕测试失败 stage=${s.stage}`;
+          this.status = `字幕审计失败 stage=${s.stage}`;
           return;
         }
       }
