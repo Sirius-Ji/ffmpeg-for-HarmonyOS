@@ -545,17 +545,27 @@ public:
                 }
                 if (plan.fontsDir.empty()) OH_LOG_WARN(LOG_APP, "[subs] fontsdir empty");
                 if (!plan.fontsDir.empty()) {
-                    if (!style.empty())
+                    if (!style.empty()) {
+                        std::string esc;
+                        for (char ch : style) {
+                            if (ch == ':') esc += "\\:";
+                            else esc += ch;
+                        }
                         snprintf(sa, sizeof(sa), "filename=%s:fontsdir=%s:force_style=%s",
-                                 plan.subtitlePath.c_str(), plan.fontsDir.c_str(), style.c_str());
-                    else
+                                 plan.subtitlePath.c_str(), plan.fontsDir.c_str(), esc.c_str());
+                    } else
                         snprintf(sa, sizeof(sa), "filename=%s:fontsdir=%s",
                                  plan.subtitlePath.c_str(), plan.fontsDir.c_str());
                 } else {
-                    if (!style.empty())
+                    if (!style.empty()) {
+                        std::string esc;
+                        for (char ch : style) {
+                            if (ch == ':') esc += "\\:";
+                            else esc += ch;
+                        }
                         snprintf(sa, sizeof(sa), "filename=%s:force_style=%s",
-                                 plan.subtitlePath.c_str(), style.c_str());
-                    else
+                                 plan.subtitlePath.c_str(), esc.c_str());
+                    } else
                         snprintf(sa, sizeof(sa), "filename=%s", plan.subtitlePath.c_str());
                 }
                 if (!add(&subs_, "subtitles", sa)) return false;

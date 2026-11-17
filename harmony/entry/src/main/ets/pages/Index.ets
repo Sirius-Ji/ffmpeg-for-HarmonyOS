@@ -277,6 +277,11 @@ struct Index {
         .enabled(!this.busy)
         .onClick(() => { this.specialBatch(); })
 
+      Button('bad_font 专用')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.badFontTest(); })
+
       Row({ space: 8 }) {
         Text(`音量 ${this.convertVolume.toFixed(2)}`).fontSize(12)
         Slider({ value: this.convertVolume, min: 0, max: 2, step: 0.05 })
@@ -711,6 +716,28 @@ struct Index {
     }
   }
 
+  async badFontTest(): Promise<void> {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('bbb_rabbit_30s.mp4');
+      const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
+      await this.ensureSample('subs_force.srt');
+      const opts = '{"trimStart":5,"trimEnd":15,"textX":"20","textY":"20",' +
+        '"subtitlePath":"' + ctx.filesDir + '/subs_force.srt",' +
+        '"fontsDir":"' + ctx.filesDir + '",' +
+        '"subtitleStyle":"FontName=NoSuchFontXYZ","speed":1.0,"atempo":1.0}';
+      this.status = 'bad_font 测试中…';
+      FFmpegOhos.videoTranscode(src, `${ctx.filesDir}/bad_font2.mp4`,
+        `watermark|FFmpeg-ohos|center|48|white|${font}|100|1`, '720p', 1.0, '', opts);
+      for (let i = 0; i < 240; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
+        const s = JSON.parse(FFmpegOhos.videoTranscodeStatus().data) as Record<string, number>;
+        if (s.state === 2) { this.status = 'bad_font 完成'; return; }
+        if (s.state === 3) { this.status = `bad_font 失败 ${s.stage}`; return; }
+      }
+    } catch (e) { this.status = `bad_font 异常: ${JSON.stringify(e)}`; }
+  }
+
   async specialBatch(): Promise<void> {
     try {
       const ctx = getContext(this) as common.UIAbilityContext;
@@ -721,7 +748,7 @@ struct Index {
       interface SpecialCase { tag: string; sub: string; speed: number; style: string; }
       const cases: SpecialCase[] = [
         { tag: 'colon', sub: 'subs_force.srt', speed: 1.0,
-          style: 'FontName=Source Han Sans CN,FontSize=24,PrimaryColour=&H0000FF00&,Outline=1,BorderStyle=1' },
+          style: 'FontName=Test:Font,FontSize=24,PrimaryColour=&H0000FF00&' },
         { tag: 'cn_1x', sub: 'subs_cn.srt', speed: 1.0, style: '' },
         { tag: 'cn_125x', sub: 'subs_cn.srt', speed: 1.25, style: '' }
       ];
