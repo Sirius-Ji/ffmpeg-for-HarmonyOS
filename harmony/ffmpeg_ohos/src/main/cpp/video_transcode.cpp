@@ -1090,6 +1090,7 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                 }
                 double speedAcc = 0.0;
                 int64_t sendPts = 0;
+                int64_t filterFrames = 0, encoderFrames = 0;
                 auto enqueueVideoPacket = [&]() {
                     OutPkt op;
                     op.pkt = av_packet_clone(pkt);
@@ -1144,6 +1145,7 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                             }
                             if (sendFrame) sendFrame->pts = sendPts;
                             sendPts++;
+                            filterFrames++;
                             int sfr;
                             for (;;) {
                                 sfr = avcodec_send_frame(venc, sendFrame);
@@ -1159,6 +1161,7 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                                 failed = 21;
                             }
                             if (sfr == 0) {
+                                encoderFrames++;
                                 while (avcodec_receive_packet(venc, pkt) == 0) {
                                     enqueueVideoPacket();
                                 }
@@ -1220,8 +1223,13 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                     vpackets++;
                     av_packet_unref(pkt);
                 }
-                OH_LOG_INFO(LOG_APP, "[vtrans] stage=6 video frames=%{public}d packets=%{public}d",
-                            frames, vpackets);
+                OH_LOG_INFO(LOG_APP, "[vtrans] stage=6 video frames=%{public}d packets=%{public}d filter_frames=%{public}lld encoder_frames=%{public}lld",
+                            frames, vpackets, (long long)filterFrames, (long long)encoderFrames);
+                if (filterFrames != encoderFrames) {
+                    OH_LOG_WARN(LOG_APP, "[vtrans] frame count mismatch filter=%{public}lld encoder=%{public}lld diff=%{public}lld",
+                                (long long)filterFrames, (long long)encoderFrames,
+                                (long long)(filterFrames - encoderFrames));
+                }
             }
         }
 
