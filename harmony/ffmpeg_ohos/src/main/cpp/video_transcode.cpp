@@ -539,6 +539,10 @@ public:
                     style = "FontName=Source Han Sans CN";
                     OH_LOG_INFO(LOG_APP, "[subs] srt default font fallback=Source Han Sans CN");
                 }
+                if (style.find("FontName=") != std::string::npos) {
+                    OH_LOG_INFO(LOG_APP, "[subs] explicit font style=%{public}s; libass fallback if unavailable",
+                                style.c_str());
+                }
                 if (plan.fontsDir.empty()) OH_LOG_WARN(LOG_APP, "[subs] fontsdir empty");
                 if (!plan.fontsDir.empty()) {
                     if (!style.empty())
