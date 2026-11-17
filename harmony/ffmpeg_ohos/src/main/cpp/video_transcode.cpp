@@ -145,6 +145,8 @@ struct VideoPlan {
     std::string pipPath;
     double pipEnableStart = 2.0;
     double pipEnableEnd = 6.0;
+    std::string pipX = "W-w-24";
+    std::string pipY = "H-h-24";
     std::string subtitlePath;
     std::string fontsDir;
     std::string subtitleStyle;
@@ -206,6 +208,8 @@ static VideoPlan ParseVideoPlan(const std::string &j) {
     p.pipPath = JsonStr(j, "pipPath", "");
     p.pipEnableStart = JsonNum(j, "pipEnableStart", 2.0);
     p.pipEnableEnd = JsonNum(j, "pipEnableEnd", 6.0);
+    p.pipX = JsonStr(j, "pipX", p.pipX);
+    p.pipY = JsonStr(j, "pipY", p.pipY);
     p.subtitlePath = JsonStr(j, "subtitlePath", "");
     p.fontsDir = JsonStr(j, "fontsDir", "");
     p.subtitleStyle = JsonStr(j, "subtitleStyle", "");
@@ -503,8 +507,8 @@ public:
         if (hasLogo) {
             char oa[256];
             if (!plan.pipPath.empty()) {
-                snprintf(oa, sizeof(oa), "x=W-w-24:y=H-h-24:enable=between(t,%.3f,%.3f)",
-                         plan.pipEnableStart, plan.pipEnableEnd);
+                snprintf(oa, sizeof(oa), "x=%s:y=%s:enable=between(t,%.3f,%.3f)",
+                         plan.pipX.c_str(), plan.pipY.c_str(), plan.pipEnableStart, plan.pipEnableEnd);
             } else {
                 snprintf(oa, sizeof(oa), "x=%s:y=%s", plan.imageX.c_str(), plan.imageY.c_str());
             }
@@ -521,22 +525,38 @@ public:
 
         char sa[768];
         if (!plan.subtitlePath.empty()) {
-            if (!plan.fontsDir.empty()) {
-                if (!plan.subtitleStyle.empty())
-                    snprintf(sa, sizeof(sa), "filename=%s:fontsdir=%s:force_style=%s",
-                             plan.subtitlePath.c_str(), plan.fontsDir.c_str(), plan.subtitleStyle.c_str());
-                else
-                    snprintf(sa, sizeof(sa), "filename=%s:fontsdir=%s",
-                             plan.subtitlePath.c_str(), plan.fontsDir.c_str());
+            FILE *sf = fopen(plan.subtitlePath.c_str(), "rb");
+            if (!sf) {
+                OH_LOG_ERROR(LOG_APP, "[subs] missing file=%{public}s; skip subtitles",
+                             plan.subtitlePath.c_str());
             } else {
-                if (!plan.subtitleStyle.empty())
-                    snprintf(sa, sizeof(sa), "filename=%s:force_style=%s",
-                             plan.subtitlePath.c_str(), plan.subtitleStyle.c_str());
-                else
-                    snprintf(sa, sizeof(sa), "filename=%s", plan.subtitlePath.c_str());
+                fclose(sf);
+                std::string style = plan.subtitleStyle;
+                const bool isSrt = plan.subtitlePath.size() >= 4 &&
+                    (plan.subtitlePath.substr(plan.subtitlePath.size() - 4) == ".srt" ||
+                     plan.subtitlePath.substr(plan.subtitlePath.size() - 4) == ".SRT");
+                if (style.empty() && isSrt) {
+                    style = "FontName=Source Han Sans CN";
+                    OH_LOG_INFO(LOG_APP, "[subs] srt default font fallback=Source Han Sans CN");
+                }
+                if (plan.fontsDir.empty()) OH_LOG_WARN(LOG_APP, "[subs] fontsdir empty");
+                if (!plan.fontsDir.empty()) {
+                    if (!style.empty())
+                        snprintf(sa, sizeof(sa), "filename=%s:fontsdir=%s:force_style=%s",
+                                 plan.subtitlePath.c_str(), plan.fontsDir.c_str(), style.c_str());
+                    else
+                        snprintf(sa, sizeof(sa), "filename=%s:fontsdir=%s",
+                                 plan.subtitlePath.c_str(), plan.fontsDir.c_str());
+                } else {
+                    if (!style.empty())
+                        snprintf(sa, sizeof(sa), "filename=%s:force_style=%s",
+                                 plan.subtitlePath.c_str(), style.c_str());
+                    else
+                        snprintf(sa, sizeof(sa), "filename=%s", plan.subtitlePath.c_str());
+                }
+                if (!add(&subs_, "subtitles", sa)) return false;
+                OH_LOG_INFO(LOG_APP, "[subs] filter=%{public}s", sa);
             }
-            if (!add(&subs_, "subtitles", sa)) return false;
-            OH_LOG_INFO(LOG_APP, "[subs] filter=%{public}s", sa);
         }
 
         char dt[512];
