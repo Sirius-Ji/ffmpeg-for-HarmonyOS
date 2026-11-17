@@ -1,4 +1,6 @@
 #!/bin/bash
+# Expat 2.7.1 is built under prebuilt/<abi>/subs.
+# FreeType is reused from prebuilt/<abi> (existing v0.2.2 closure).
 set -eu
 ROOT=/d/PublicProject/ffmpeg-for-HarmonyOS
 chmod +x "$ROOT/build/pkg-config-subs"

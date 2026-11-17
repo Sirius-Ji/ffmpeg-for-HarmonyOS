@@ -1,4 +1,6 @@
 #!/bin/bash
+# FreeType 2.13.2 and HarfBuzz 8.3.0 are reused from prebuilt/<abi>
+# (the existing v0.2.2 libavfilter closure); they are not rebuilt here.
 set -eu
 ROOT=/d/PublicProject/ffmpeg-for-HarmonyOS
 for pair in arm64-v8a:aarch64-linux-gnu x86_64:x86_64-linux-gnu; do
