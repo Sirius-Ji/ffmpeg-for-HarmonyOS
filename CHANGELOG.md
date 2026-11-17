@@ -2,6 +2,29 @@
 
 所有值得注意的变更都记在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## v0.3.0（2026-11-17）
+
+### Added
+
+- libass/字幕：SRT、ASS、WebVTT，VideoPlan `subtitlePath/fontsDir/subtitleStyle`，fontsdir 与 force_style 支持。
+- 视频滤镜链重构：VideoPlan、trim/crop/color、任意坐标水印、图片旋转、PiP 2–6s。
+- 音频滤镜图：atrim/atempo/afreqshift/aecho/volume/alimiter。
+- 时间轴修复：滤镜 PTS 映射到输出时间轴；硬编 filter/encoder 帧数监控。
+- 降级：字幕缺失跳过、fontsdir 为空告警、SRT 默认字体 fallback。
+- 合规：FriBidi/fontconfig/libass 静态依赖、licenses、app 侧 relink `.o` 与链接命令。
+
+### Changed
+
+- 旧 `videoTranscode(...)` 标记 deprecated（v0.4.0 移除）；兼容层保留。
+- 版本统一 0.3.0；双 ABI 编译产物保留。
+- x86_64 运行验收未包含在本版本证据中，已写入 README。
+
+### Fixed
+
+- ASS/SRT/PiP 在倍速与慢放下的输出时间轴偏移。
+- 冒号 `force_style` 值转义；SRT 默认字体缺失无字幕。
+- 发布门禁新增 frame count mismatch 监控。
+
 ## v0.2.2（2026-11-15）
 
 M5.2 深度工程重塑：全量重链、单一源打包、发布门禁与合规补全。

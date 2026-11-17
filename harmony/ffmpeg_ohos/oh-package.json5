@@ -1,6 +1,6 @@
 {
   "name": "@sirius/ffmpeg_ohos",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "FFmpeg for HarmonyOS typed ArkTS facade",
   "main": "Index.ets",
   "types": "Index.d.ts",

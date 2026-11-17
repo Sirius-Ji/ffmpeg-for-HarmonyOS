@@ -4,7 +4,7 @@ import io
 import tarfile
 import zipfile
 
-VERSION = '0.2.2'
+VERSION = '0.3.0'
 ROOT = Path('.')
 OUT = ROOT / 'dist/release'
 OUT.mkdir(parents=True, exist_ok=True)
