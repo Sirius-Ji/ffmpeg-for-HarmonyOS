@@ -272,6 +272,11 @@ struct Index {
         .enabled(!this.busy)
         .onClick(() => { this.degradeBatch(); })
 
+      Button('冒号/中文批量')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.specialBatch(); })
+
       Row({ space: 8 }) {
         Text(`音量 ${this.convertVolume.toFixed(2)}`).fontSize(12)
         Slider({ value: this.convertVolume, min: 0, max: 2, step: 0.05 })
@@ -704,6 +709,42 @@ struct Index {
     } catch (e) {
       this.status = `B 四组异常: ${JSON.stringify(e)}`;
     }
+  }
+
+  async specialBatch(): Promise<void> {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('bbb_rabbit_30s.mp4');
+      const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
+      await this.ensureSample('subs_force.srt');
+      await this.ensureSample('subs_cn.srt');
+      interface SpecialCase { tag: string; sub: string; speed: number; style: string; }
+      const cases: SpecialCase[] = [
+        { tag: 'colon', sub: 'subs_force.srt', speed: 1.0,
+          style: 'FontName=Source Han Sans CN,FontSize=24,PrimaryColour=&H0000FF00&,Outline=1,BorderStyle=1' },
+        { tag: 'cn_1x', sub: 'subs_cn.srt', speed: 1.0, style: '' },
+        { tag: 'cn_125x', sub: 'subs_cn.srt', speed: 1.25, style: '' }
+      ];
+      for (let i = 0; i < cases.length; i++) {
+        const c = cases[i];
+        const dst = `${ctx.filesDir}/special_${c.tag}.mp4`;
+        const opts = '{"trimStart":5,"trimEnd":15,"textX":"20","textY":"20",' +
+          '"pipPath":"' + src + '","pipEnableStart":2,"pipEnableEnd":6,' +
+          '"subtitlePath":"' + ctx.filesDir + '/' + c.sub + '",' +
+          '"fontsDir":"' + ctx.filesDir + '","subtitleStyle":"' + c.style + '",' +
+          '"speed":' + c.speed.toString() + ',"atempo":' + c.speed.toString() + '}';
+        this.status = `特殊测试 ${c.tag}…`;
+        FFmpegOhos.videoTranscode(src, dst,
+          `watermark|FFmpeg-ohos|center|48|white|${font}|100|1`, '720p', 1.0, '', opts);
+        for (let j = 0; j < 240; j++) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 500));
+          const s = JSON.parse(FFmpegOhos.videoTranscodeStatus().data) as Record<string, number>;
+          if (s.state === 2) break;
+          if (s.state === 3) { this.status = `特殊 ${c.tag} 失败`; return; }
+        }
+      }
+      this.status = '冒号/中文批量完成';
+    } catch (e) { this.status = `特殊异常: ${JSON.stringify(e)}`; }
   }
 
   async layerTest(): Promise<void> {
