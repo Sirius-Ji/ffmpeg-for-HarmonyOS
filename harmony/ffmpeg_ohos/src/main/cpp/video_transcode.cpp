@@ -145,6 +145,8 @@ struct VideoPlan {
     std::string pipPath;
     double pipEnableStart = 2.0;
     double pipEnableEnd = 6.0;
+    std::string subtitlePath;
+    std::string fontsDir;
 };
 
 static bool HasJsonKey(const std::string &j, const char *key) {
@@ -203,6 +205,8 @@ static VideoPlan ParseVideoPlan(const std::string &j) {
     p.pipPath = JsonStr(j, "pipPath", "");
     p.pipEnableStart = JsonNum(j, "pipEnableStart", 2.0);
     p.pipEnableEnd = JsonNum(j, "pipEnableEnd", 6.0);
+    p.subtitlePath = JsonStr(j, "subtitlePath", "");
+    p.fontsDir = JsonStr(j, "fontsDir", "");
     return p;
 }
 
@@ -511,6 +515,17 @@ public:
             if (avfilter_link(logoOut, 0, overlay_, 1) < 0) return false;
         }
 
+        char sa[768];
+        if (!plan.subtitlePath.empty()) {
+            if (!plan.fontsDir.empty())
+                snprintf(sa, sizeof(sa), "filename=%s:fontsdir=%s:force_style=FontName=Source Han Sans CN",
+                         plan.subtitlePath.c_str(), plan.fontsDir.c_str());
+            else
+                snprintf(sa, sizeof(sa), "filename=%s:force_style=FontName=Source Han Sans CN",
+                         plan.subtitlePath.c_str());
+            if (!add(&subs_, "subtitles", sa)) return false;
+        }
+
         char dt[512];
         snprintf(dt, sizeof(dt), "fontfile=%s:text='%s':x=%s:y=%s:fontsize=48:fontcolor=white",
                  fontPath.c_str(), EscapeText(text).c_str(), plan.textX.c_str(), plan.textY.c_str());
@@ -532,8 +547,6 @@ public:
         if (logoFrame_) av_frame_free(&logoFrame_);
         logoFrame_ = av_frame_clone(f);
         logoPts_ = 0;
-        OH_LOG_INFO(LOG_APP, "[plan] logo ready %{public}dx%{public}d fmt=%{public}d",
-                    f ? f->width : -1, f ? f->height : -1, f ? f->format : -1);
         return logoFrame_ ? 0 : AVERROR(ENOMEM);
     }
     int Run(AVFrame *in, AVFrame *out) {
@@ -556,7 +569,7 @@ public:
 private:
     AVFilterGraph *graph_ = nullptr;
     AVFilterContext *main_ = nullptr, *logo_ = nullptr, *overlay_ = nullptr, *scale_ = nullptr, *draw_ = nullptr, *fmt_ = nullptr, *sink_ = nullptr;
-    AVFilterContext *trim_ = nullptr, *setpts_ = nullptr, *crop_ = nullptr, *hue_ = nullptr, *levels_ = nullptr, *temp_ = nullptr, *rotate_ = nullptr, *logoFmt_ = nullptr, *logoScale_ = nullptr;
+    AVFilterContext *trim_ = nullptr, *setpts_ = nullptr, *crop_ = nullptr, *hue_ = nullptr, *levels_ = nullptr, *temp_ = nullptr, *rotate_ = nullptr, *logoFmt_ = nullptr, *logoScale_ = nullptr, *subs_ = nullptr;
     AVFrame *logoFrame_ = nullptr;
     int64_t logoPts_ = 0;
     bool ready_ = false;

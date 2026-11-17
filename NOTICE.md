@@ -23,16 +23,22 @@ NDK C++ runtime matching its own toolchain.
 
 - **FreeType 2.13.2** — FTL (FreeType License), `LICENSES/FreeType-FTL.txt`
 - **HarfBuzz 8.3.0** — MIT, `LICENSES/HarfBuzz-MIT.txt`
+- **libass 0.17.3** — ISC, `LICENSES/libass-ISC.txt`
+- **FriBidi 1.0.16** — LGPL-2.1-or-later, `LICENSES/FriBidi-LGPL-2.1.txt`
+- **fontconfig 2.14.2** — MIT-style, `LICENSES/fontconfig-MIT.txt`
+- **Expat 2.7.1** — MIT, `LICENSES/expat-MIT.txt`
+- **libunibreak 6.1** — zlib-style, `LICENSES/libunibreak-zlib.txt`
 
-These are linked into `libavfilter.so.12` for `drawtext`.
+These are linked into `libavfilter.so.12` for `drawtext` and `subtitles`.
 
 ## FFmpeg build configuration (excerpt)
 
 ```
 --enable-avfilter --enable-swscale --enable-libfreetype --enable-libharfbuzz
---enable-filter=drawtext,scale,overlay,format
---enable-decoder=png,mjpeg
---enable-demuxer=image2
+--enable-libass
+--enable-filter=drawtext,scale,overlay,format,crop,trim,setpts,subtitles,ass
+--enable-decoder=png,mjpeg,srt,ass,webvtt
+--enable-demuxer=image2,srt,ass,webvtt
 --enable-zlib
 --disable-gpl --disable-nonfree --disable-libx264 --disable-libx265
 --disable-asm (arm64), --disable-x86asm (x86_64)
@@ -47,5 +53,6 @@ lines and logs are produced by `build/build-ffmpeg.sh`.
 - zlib: zlib License (see upstream `zlib.h`)
 - FreeType: FTL / GPLv2 dual-licensed; this distribution uses FTL
 - HarfBuzz: MIT
+- libass/FriBidi/fontconfig/Expat/libunibreak: see `LICENSES/`, statically linked for subtitles
 
 The corresponding source archives and build patches are in the repository.

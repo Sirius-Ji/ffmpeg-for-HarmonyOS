@@ -96,3 +96,17 @@ harmony/ffmpeg_ohos/oh_modules/
 /build/m50-tmp/
 
 /build/m52-tmp/
+
+# subtitle dependency sources / out-of-tree builds
+third_party/fribidi-*/
+third_party/libunibreak-*/
+third_party/libexpat-*/
+third_party/fontconfig-*/
+third_party/libass-*/
+third_party/*.tar.*
+build/expat-*/
+build/fribidi-*/
+build/fontconfig-*/
+build/libass-*/
+build/unibreak-*/
+build/subs-toolchain/

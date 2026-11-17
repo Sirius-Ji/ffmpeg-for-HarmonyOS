@@ -1,0 +1,52 @@
+#!/bin/sh
+# Minimal pkg-config shim for the static subtitle dependency build.
+if [ "$1" = "--version" ]; then echo "0.29.2"; exit 0; fi
+if [ "$1" = "--atleast-pkgconfig-version" ]; then exit 0; fi
+case "$1" in --exists|--cflags|--libs|--modversion|--variable=*) ;; *) exit 1;; esac
+for a in "$@"; do
+  case "$a" in
+    *freetype2*)
+      case "$1" in
+        --exists) exit 0;; --cflags) echo "-I${FT_PREFIX}/include/freetype2"; exit 0;;
+        --libs) echo "-L${FT_PREFIX}/lib -lfreetype"; exit 0;;
+        --modversion) echo "26.1.20"; exit 0;; --variable=*) echo "${FT_PREFIX}"; exit 0;;
+      esac;;
+    *harfbuzz*)
+      case "$1" in
+        --exists) exit 0;; --cflags) echo "-I${HB_PREFIX}/include/harfbuzz"; exit 0;;
+        --libs) echo "-L${HB_PREFIX}/lib -lharfbuzz"; exit 0;;
+        --modversion) echo "8.3.0"; exit 0;; --variable=*) echo "${HB_PREFIX}"; exit 0;;
+      esac;;
+    *expat*)
+      case "$1" in
+        --exists) exit 0;; --cflags) echo "-I${SUBS_PREFIX}/include"; exit 0;;
+        --libs) echo "-L${SUBS_PREFIX}/lib -lexpat"; exit 0;;
+        --modversion) echo "2.7.1"; exit 0;; --variable=*) echo "${SUBS_PREFIX}"; exit 0;;
+      esac;;
+    *fribidi*)
+      case "$1" in
+        --exists) exit 0;; --cflags) echo "-I${SUBS_PREFIX}/include/fribidi"; exit 0;;
+        --libs) echo "-L${SUBS_PREFIX}/lib -lfribidi"; exit 0;;
+        --modversion) echo "1.0.16"; exit 0;; --variable=*) echo "${SUBS_PREFIX}"; exit 0;;
+      esac;;
+    *fontconfig*)
+      case "$1" in
+        --exists) exit 0;; --cflags) echo "-I${SUBS_PREFIX}/include/fontconfig"; exit 0;;
+        --libs) echo "-L${SUBS_PREFIX}/lib -lfontconfig -lexpat -lfreetype"; exit 0;;
+        --modversion) echo "2.14.2"; exit 0;; --variable=*) echo "${SUBS_PREFIX}"; exit 0;;
+      esac;;
+    *unibreak*)
+      case "$1" in
+        --exists) exit 0;; --cflags) echo "-I${SUBS_PREFIX}/include"; exit 0;;
+        --libs) echo "-L${SUBS_PREFIX}/lib -lunibreak"; exit 0;;
+        --modversion) echo "6.1"; exit 0;; --variable=*) echo "${SUBS_PREFIX}"; exit 0;;
+      esac;;
+    *libass*)
+      case "$1" in
+        --exists) exit 0;; --cflags) echo "-I${SUBS_PREFIX}/include"; exit 0;;
+        --libs) echo "-L${SUBS_PREFIX}/lib -lass -lfontconfig -lfribidi -lharfbuzz -lfreetype -lunibreak -lexpat"; exit 0;;
+        --modversion) echo "0.17.3"; exit 0;; --variable=*) echo "${SUBS_PREFIX}"; exit 0;;
+      esac;;
+  esac
+done
+exit 1

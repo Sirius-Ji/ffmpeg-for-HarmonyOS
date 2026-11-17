@@ -94,13 +94,14 @@ build_one() {
   export PKG_CONFIG_PATH="$OUT/$abi/lib/pkgconfig"
   export FT_PREFIX="$OUT/$abi"
   export HB_PREFIX="$OUT/$abi"
+  export SUBS_PREFIX="$OUT/$abi/subs"
   "$SRC/configure" \
     --target-os=linux \
     --arch="$arch" \
     --enable-cross-compile \
     --cc="$tdir/cc" \
     --cxx="$tdir/cxx" \
-    --pkg-config="$ROOT/build/freetype-pkg-config.sh" \
+    --pkg-config="$ROOT/build/pkg-config-subs" \
     --ld="$tdir/cc" \
     --ar="$tdir/ar" \
     --ranlib="$tdir/ranlib" \
@@ -108,8 +109,8 @@ build_one() {
     --strip="$tdir/strip" \
     --host-cc="${HOSTCC:-$tdir/cc}" \
     $SYSFLAG \
-    --extra-cflags="-D__MUSL__ -I$OUT/$abi/include -I$OUT/$abi/include/freetype2 -I$OUT/$abi/include/harfbuzz -ffile-prefix-map=$ROOT=/build" \
-    --extra-ldflags="-Wl,-z,max-page-size=16384 -L$OUT/$abi/lib" \
+    --extra-cflags="-D__MUSL__ -I$OUT/$abi/include -I$OUT/$abi/include/freetype2 -I$OUT/$abi/include/harfbuzz -I$OUT/$abi/subs/include -ffile-prefix-map=$ROOT=/build" \
+    --extra-ldflags="-Wl,-z,max-page-size=16384 -L$OUT/$abi/lib -L$OUT/$abi/subs/lib" \
     --prefix="$OUT/$abi" \
     --enable-shared --disable-static \
     --disable-programs --disable-doc --disable-avdevice \
@@ -117,12 +118,12 @@ build_one() {
     --disable-vulkan \
     --disable-everything \
     --enable-avformat --enable-avcodec --enable-avutil --enable-swresample --enable-avfilter --enable-swscale \
-    --enable-libfreetype --enable-libharfbuzz --enable-filter=drawtext,scale,overlay,format,crop,trim,setpts,hue,colorlevels,colorchannelmixer,colorbalance,colortemperature,atempo,atrim,asetpts,afreqshift,aecho,volume,aformat,aresample,alimiter,rotate \
+    --enable-libfreetype --enable-libharfbuzz --enable-libass --enable-filter=drawtext,scale,overlay,format,crop,trim,setpts,hue,colorlevels,colorchannelmixer,colorbalance,colortemperature,atempo,atrim,asetpts,afreqshift,aecho,volume,aformat,aresample,alimiter,rotate,subtitles,ass \
     --enable-ohcodec \
-    --enable-decoder=h264_oh,hevc_oh,h264,hevc,aac,ac3,eac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2,png,mjpeg \
+    --enable-decoder=h264_oh,hevc_oh,h264,hevc,aac,ac3,eac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2,png,mjpeg,srt,subrip,ass,webvtt \
     --enable-encoder=aac,alac,flac,pcm_s16le,pcm_s24le,libmp3lame,opus,h264_oh,hevc_oh \
-    --enable-parser=aac,ac3,dca,flac,h264,hevc,mpegaudio,opus \
-    --enable-demuxer=mov,matroska,ogg,flac,ape,dsf,wav,mp3,aac,tta,wv,caf,asf,mpegts,flv,image2 \
+    --enable-parser=aac,ac3,dca,flac,h264,hevc,mpegaudio,opus,srt,ass,webvtt \
+    --enable-demuxer=mov,matroska,ogg,flac,ape,dsf,wav,mp3,aac,tta,wv,caf,asf,mpegts,flv,image2,srt,ass,webvtt \
     --enable-muxer=mp4,mov,ipod,mp3,flac,wav,matroska,adts,ogg,opus,mpegts,flv \
     --enable-libmp3lame \
     --enable-zlib \

@@ -27,6 +27,8 @@ struct Index {
   @State wmBold: boolean = false;
   @State resolution: string = '720p';
   @State convertVolume: number = 1.0;
+  @State subtitlePath: string = '';
+  @State fontsDir: string = '';
   private timer: number = -1;
   private videoController: XComponentController = new XComponentController();
 
@@ -223,6 +225,22 @@ struct Index {
         .fontSize(13)
         .enabled(!this.busy)
         .onClick(() => { this.rotationTest(); })
+
+      TextInput({ text: this.subtitlePath, placeholder: '字幕路径（留空用内置 subs.srt）' })
+        .fontSize(12)
+        .onChange((v: string) => { this.subtitlePath = v; })
+      TextInput({ text: this.fontsDir, placeholder: '字体目录（留空用 filesDir）' })
+        .fontSize(12)
+        .onChange((v: string) => { this.fontsDir = v; })
+      Button('字幕测试（SRT + PiP）')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.subtitleTest(); })
+
+      Button('字幕测试（ASS + PiP）')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.subtitleTest(true); })
 
       Row({ space: 8 }) {
         Text(`音量 ${this.convertVolume.toFixed(2)}`).fontSize(12)
@@ -609,6 +627,44 @@ struct Index {
       this.status = `M4.4 转码已启动: ${format} -> ${dst}`;
     } catch (e) {
       this.status = `格式转码异常: ${JSON.stringify(e)}`;
+    }
+  }
+
+  async subtitleTest(ass: boolean = false): Promise<void> {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('bbb_rabbit_30s.mp4');
+      const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
+      const subName = ass ? 'subs_style.ass' : 'subs.srt';
+      await this.ensureSample(subName);
+      const dst = `${ctx.filesDir}/${ass ? 'v03_sub_ass.mp4' : 'v03_sub.mp4'}`;
+      const subPath = this.subtitlePath.length > 0 ? this.subtitlePath : `${ctx.filesDir}/${subName}`;
+      const fonts = this.fontsDir.length > 0 ? this.fontsDir : ctx.filesDir;
+      const opts = '{"trimStart":5,"trimEnd":15,"cropW":640,"cropH":480,' +
+        '"brightness":0.08,"contrast":1.10,"saturation":1.15,' +
+        '"textX":"(w-tw)/2","textY":"(h-th)/2",' +
+        '"pipPath":"' + src + '","pipEnableStart":2,"pipEnableEnd":6,' +
+        '"subtitlePath":"' + subPath + '","fontsDir":"' + fonts + '",' +
+        '"speed":1.25,"atempo":1.25}';
+      this.status = '字幕测试中…';
+      FFmpegOhos.videoTranscode(src, dst,
+        `watermark|FFmpeg-ohos|center|48|white|${font}|100|1`,
+        '720p', 1.0, '', opts);
+      for (let i = 0; i < 240; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
+        const s = JSON.parse(FFmpegOhos.videoTranscodeStatus().data) as Record<string, number>;
+        if (s.state === 2) {
+          this.status = `字幕测试完成 ${s.size} bytes`;
+          FFmpegOhos.videoPlay(dst, this.surfaceId, false, false);
+          return;
+        }
+        if (s.state === 3) {
+          this.status = `字幕测试失败 stage=${s.stage}`;
+          return;
+        }
+      }
+    } catch (e) {
+      this.status = `字幕测试异常: ${JSON.stringify(e)}`;
     }
   }
 
