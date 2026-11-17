@@ -211,7 +211,7 @@ static VideoPlan ParseVideoPlan(const std::string &j) {
     p.pipX = JsonStr(j, "pipX", p.pipX);
     p.pipY = JsonStr(j, "pipY", p.pipY);
     p.subtitlePath = JsonStr(j, "subtitlePath", "");
-    p.fontsDir = JsonStr(j, "fontsDir", "");
+    p.fontsDir = JsonStr(j, "fontsDir", JsonStr(j, "fontsdir", ""));
     p.subtitleStyle = JsonStr(j, "subtitleStyle", "");
     return p;
 }

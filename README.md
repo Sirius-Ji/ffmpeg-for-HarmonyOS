@@ -30,6 +30,25 @@ FFmpegOhos.videoTranscode(
 );
 ```
 
+```ts
+FFmpegOhos.videoTranscode(
+  srcPath, dstPath,
+  `watermark|字幕测试|center|48|white|${fontPath}|100|1`,
+  '720p', 1.0, '', JSON.stringify({
+    trimStart: 5, trimEnd: 15,
+    cropW: 640, cropH: 480,
+    speed: 1.25, atempo: 1.25,
+    subtitlePath: `${filesDir}/subs.srt`,
+    fontsDir: filesDir
+  } as TranscodeOptions)
+);
+```
+
+`optionsJson` 字段（camelCase，C++ 同时兼容 `fontsdir` 旧写法）：
+`trimStart/trimEnd/cropW/cropH/cropX/cropY/brightness/contrast/saturation/temperature/speed/atempo/textX/textY/imageX/imageY/rotate/pipPath/pipEnableStart/pipEnableEnd/pipX/pipY/subtitlePath/fontsDir/subtitleStyle`。
+
+HAR 与 per-ABI ZIP 使用同一份 `prebuilt/<abi>` 字节；没有单独 strip。`
+
 HAR 自带 `libentry.so` 与 FFmpeg 动态库，无需在 entry 再配置 `externalNativeOptions`。
 
 
@@ -38,6 +57,14 @@ HAR 自带 `libentry.so` 与 FFmpeg 动态库，无需在 entry 再配置 `exter
 > `.so.10`（swscale）、`.so.0`（mp3lame）、`.so.1`（libffz）。
 > 任一 SONAME 变更视为**破坏性更新**，需升级 major 版本；升级 FFmpeg
 > n10 或 zlib 主版本时必须重新核对整条 NEEDED 链。
+
+## 🚀 v0.3.0 更新亮点
+
+- libass 字幕：SRT / ASS / WebVTT，`subtitlePath/fontsDir` + `fontsdir` + `force_style`。
+- VideoPlan 视频链：trim/crop/color、任意坐标水印、图片旋转、2–6s PiP。
+- 音频滤镜图：atrim/atempo/afreqshift/aecho/volume/alimiter。
+- 1.25x/0.5x 输出时间轴映射；硬编 filter/encoder 帧数监控。
+- 字幕缺失/字体缺失降级；FriBidi relink 对象、源码与许可证入包。
 
 ## 🚀 v0.1.5 更新亮点
 

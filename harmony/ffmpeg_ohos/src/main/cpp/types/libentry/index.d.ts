@@ -4,6 +4,34 @@ export interface NapiResult {
   data: string;
 }
 
+export interface TranscodeOptions {
+  trimStart?: number;
+  trimEnd?: number;
+  cropW?: number;
+  cropH?: number;
+  cropX?: number;
+  cropY?: number;
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
+  temperature?: number;
+  speed?: number;
+  atempo?: number;
+  textX?: string;
+  textY?: string;
+  imageX?: string;
+  imageY?: string;
+  rotate?: number;
+  pipPath?: string;
+  pipEnableStart?: number;
+  pipEnableEnd?: number;
+  pipX?: string;
+  pipY?: string;
+  subtitlePath?: string;
+  fontsDir?: string;
+  subtitleStyle?: string;
+}
+
 declare const native: {
   // M1：整文件自检（返回 JSON 字符串）
   probe: (path: string) => string;

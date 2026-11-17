@@ -3,6 +3,35 @@ export interface NapiResult {
   data: string;
 }
 
+/** Flat JSON options accepted by videoTranscode's 7th argument. */
+export interface TranscodeOptions {
+  trimStart?: number;
+  trimEnd?: number;
+  cropW?: number;
+  cropH?: number;
+  cropX?: number;
+  cropY?: number;
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
+  temperature?: number;
+  speed?: number;
+  atempo?: number;
+  textX?: string;
+  textY?: string;
+  imageX?: string;
+  imageY?: string;
+  rotate?: number;
+  pipPath?: string;
+  pipEnableStart?: number;
+  pipEnableEnd?: number;
+  pipX?: string;
+  pipY?: string;
+  subtitlePath?: string;
+  fontsDir?: string;
+  subtitleStyle?: string;
+}
+
 export declare class FFmpegOhos {
   static videoTranscode(srcPath: string, dstPath: string, format?: string,
     resolution?: string, volume?: number, imagePath?: string, optionsJson?: string): NapiResult;

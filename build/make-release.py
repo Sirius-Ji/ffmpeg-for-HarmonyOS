@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import zipfile
+import shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION = os.environ.get("RELEASE_VERSION", "n9.0-ohos")
@@ -81,7 +82,7 @@ def build_info(abi, lib_files):
     lines += [
         "",
         f"release_tag : {TAG}",
-        f"release_notes: {TAG} · 可复现构建 + Release sha256 强校验 + CMake 消费测试。",
+        f"release_notes: v0.3.0 · 字幕/libass + VideoPlan/PiP + 变速时间轴 + 合规重链接材料。",
         "",
         "files:",
     ]
@@ -100,6 +101,8 @@ def build_info(abi, lib_files):
 
 
 def main():
+    shutil.rmtree(OUTDIR, ignore_errors=True)
+    os.makedirs(OUTDIR, exist_ok=True)
     os.makedirs(OUTDIR, exist_ok=True)
 
     # 清掉旧产物，避免校验时把上一版当成这一版
@@ -134,8 +137,14 @@ def main():
             for fn, p in lib_files.items():
                 z.write(p, os.path.join("lib", fn))
             z.write(os.path.join(ROOT, "NOTICE.md"), "NOTICE.md")
-            z.write(os.path.join(ROOT, "LICENSES", "LGPL-2.1.txt"),
-                    os.path.join("LICENSES", "LGPL-2.1.txt"))
+            for lp in sorted(os.listdir(os.path.join(ROOT, "LICENSES"))):
+                srcp = os.path.join(ROOT, "LICENSES", lp)
+                if os.path.isfile(srcp):
+                    z.write(srcp, os.path.join("LICENSES", lp))
+            for dirpath, _dirs, files in os.walk(os.path.join(ROOT, "RELINK")):
+                for fn in files:
+                    srcp = os.path.join(dirpath, fn)
+                    z.write(srcp, os.path.relpath(srcp, ROOT))
             z.write(os.path.join(ROOT, "build", "ffmpeg-ohos-config.cmake"),
                     "lib/cmake/ffmpeg_ohos/ffmpeg-ohos-config.cmake")
             z.write(os.path.join(ROOT, "build", "ffmpeg_ohos-config.cmake"),

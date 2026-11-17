@@ -43,11 +43,33 @@ manifest = ['ffmpeg-ohos-har ' + VERSION]
 for m, d in base:
     if m.isfile() and not m.name.endswith('/BUILD-INFO.txt'):
         manifest.append('%s %d %s' % (m.name, len(d), sha(d)))
+for lp in sorted((ROOT / 'LICENSES').iterdir()):
+    if lp.is_file():
+        data = read(lp)
+        manifest.append('package/LICENSES/%s %d %s' % (lp.name, len(data), sha(data)))
+for rp in sorted((ROOT / 'RELINK').rglob('*')):
+    if rp.is_file():
+        data = read(rp)
+        rel = rp.relative_to(ROOT / 'RELINK').as_posix()
+        manifest.append('package/RELINK/%s %d %s' % (rel, len(data), sha(data)))
 man = ('\n'.join(manifest) + '\n').encode()
 har_out = OUT / ('ffmpeg_ohos-v%s.har' % VERSION)
 with tarfile.open(har_out, 'w:gz') as dst:
     for m, d in base:
         dst.addfile(m, io.BytesIO(d) if d is not None else None)
+    for lp in sorted((ROOT / 'LICENSES').iterdir()):
+        if lp.is_file():
+            data = read(lp)
+            ti = tarfile.TarInfo('package/LICENSES/' + lp.name)
+            ti.size = len(data)
+            dst.addfile(ti, io.BytesIO(data))
+    for rp in sorted((ROOT / 'RELINK').rglob('*')):
+        if rp.is_file():
+            data = read(rp)
+            ti = tarfile.TarInfo('package/RELINK/' + rp.relative_to(ROOT / 'RELINK').as_posix())
+            ti.size = len(data)
+            dst.addfile(ti, io.BytesIO(data))
+
     ti = tarfile.TarInfo('package/BUILD-INFO.txt')
     ti.size = len(man)
     dst.addfile(ti, io.BytesIO(man))
@@ -64,9 +86,15 @@ for abi in ABIS:
 for src, dst in [(ROOT / 'build/sdk/CMakeLists.txt', 'CMakeLists.txt'),
                  (ROOT / 'build/sdk/README.md', 'README.md'),
                  (ROOT / 'NOTICE.md', 'NOTICE.md'),
-                 (ROOT / 'LICENSES/FreeType-FTL.txt', 'LICENSES/FreeType-FTL.txt'),
-                 (ROOT / 'LICENSES/HarfBuzz-MIT.txt', 'LICENSES/HarfBuzz-MIT.txt'),
-                 (ROOT / 'LICENSES/FFmpeg-LGPL-2.1.txt', 'LICENSES/FFmpeg-LGPL-2.1.txt')]:
+                 ]:
+    sdk_files[dst] = read(src)
+for lp in sorted((ROOT / 'LICENSES').iterdir()):
+    if lp.is_file():
+        sdk_files['LICENSES/' + lp.name] = read(lp)
+for rp in sorted((ROOT / 'RELINK').rglob('*')):
+    if rp.is_file():
+        sdk_files['RELINK/' + rp.relative_to(ROOT / 'RELINK').as_posix()] = read(rp)
+for src, dst in []:
     sdk_files[dst] = read(src)
 man = ['ffmpeg-ohos-sdk ' + VERSION]
 for k in sorted(sdk_files):
@@ -85,4 +113,8 @@ for p in sorted(OUT.iterdir()):
     if p.is_file() and p.name != sums.name:
         lines.append('%s  %s' % (sha(read(p)), p.name))
 sums.write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
+for line in lines:
+    name = line.split('  ', 1)[1]
+    if not (OUT / name).is_file():
+        raise SystemExit('SHA256SUMS references missing asset: ' + name)
 print('SHA256SUMS', sums, len(lines), 'files')
