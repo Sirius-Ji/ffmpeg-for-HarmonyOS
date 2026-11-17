@@ -4,6 +4,8 @@
 
 ## v0.3.1（2026-11-17）
 
+**Audit 修复版。** v0.3.0 初版存在对外接口契约缺失与打包不全：`Index.d.ts` 缺 7 参数/类型、`fontsDir` 大小写兼容缺失、HAR/SDK/per-ABI ZIP 漏 LICENSES 与 RELINK、SHA256SUMS 有幽灵条目、HAR 与 ZIP 二进制不一致。
+
 ### Fixed
 
 - 修复 v0.3.0 打包脚本漏拷 LICENSES 与 RELINK 的问题：HAR、SDK ZIP、per-ABI ZIP 均包含完整合规材料。
