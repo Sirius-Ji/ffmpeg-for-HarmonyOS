@@ -635,7 +635,7 @@ struct Index {
       const ctx = getContext(this) as common.UIAbilityContext;
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
-      const subName = ass ? 'subs_audit.ass' : 'subs_force.srt';
+      const subName = ass ? 'subs_audit2.ass' : 'subs_force.srt';
       await this.ensureSample(subName);
       const dst = `${ctx.filesDir}/${ass ? 'audit_ass.mp4' : 'audit_srt.mp4'}`;
       const subPath = this.subtitlePath.length > 0 ? this.subtitlePath : `${ctx.filesDir}/${subName}`;

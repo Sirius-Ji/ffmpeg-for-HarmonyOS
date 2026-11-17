@@ -534,6 +534,7 @@ public:
                     snprintf(sa, sizeof(sa), "filename=%s", plan.subtitlePath.c_str());
             }
             if (!add(&subs_, "subtitles", sa)) return false;
+            OH_LOG_INFO(LOG_APP, "[subs] filter=%{public}s", sa);
         }
 
         char dt[512];
@@ -572,6 +573,10 @@ public:
         int r = av_buffersrc_add_frame_flags(main_, in, AV_BUFFERSRC_FLAG_KEEP_REF);
         if (r < 0) return r;
         int sr = av_buffersink_get_frame(sink_, out);
+        if (in->pts >= 4500 && in->pts <= 6000) {
+            OH_LOG_INFO(LOG_APP, "[subs] in_pts=%{public}lld sink_ret=%{public}d",
+                        (long long)in->pts, sr);
+        }
         return sr;
     }
     int SendEOS() { return av_buffersrc_add_frame_flags(main_, nullptr, 0); }
