@@ -82,7 +82,7 @@ def build_info(abi, lib_files):
     lines += [
         "",
         f"release_tag : {TAG}",
-        f"release_notes: v0.3.0 · 字幕/libass + VideoPlan/PiP + 变速时间轴 + 合规重链接材料。",
+        f"release_notes: v0.3.1 · 字幕/libass + VideoPlan/PiP + 变速时间轴 + 合规重链接材料。",
         "",
         "files:",
     ]

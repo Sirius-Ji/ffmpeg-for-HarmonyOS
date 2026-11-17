@@ -1,6 +1,6 @@
 # NOTICE
 
-ffmpeg-for-HarmonyOS v0.3.0 is distributed under the **GNU Lesser General
+ffmpeg-for-HarmonyOS v0.3.1 is distributed under the **GNU Lesser General
 Public License v2.1 or later (LGPL-2.1-or-later)**.
 
 ## Shipped shared libraries (8)

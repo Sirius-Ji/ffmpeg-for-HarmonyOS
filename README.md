@@ -1,11 +1,11 @@
 # ffmpeg-for-HarmonyOS
 
-> v0.3.0 保留 x86_64 编译产物与符号校验；当前版本未包含 x86_64 模拟器运行验收证据，待后续环境具备时补测。
+> v0.3.1 保留 x86_64 编译产物与符号校验；当前版本未包含 x86_64 模拟器运行验收证据，待后续环境具备时补测。
 
-> **v0.3.0 · M5.2 单一源构建**
+> **v0.3.1 · M5.2 单一源构建**
 >
 > 同时提供 ArkTS HAR（`ffmpeg_ohos.har`）和 C++ ZIP SDK
-> （`ffmpeg-ohos-sdk-v0.3.0.zip`，含 include/lib/CMake/BUILD-INFO/LICENSES）。
+> （`ffmpeg-ohos-sdk-v0.3.1.zip`，含 include/lib/CMake/BUILD-INFO/LICENSES）。
 > 全量强清重链，HAR 与 ZIP 均来自同一份 `prebuilt/<abi>` 字节。
 > 视频硬解、零拷贝渲染、文字/图片水印、音视频多格式转码均已真机验证。
 > **API 仍可能变更**，欢迎试用、集成、提 Issue 和 PR。
@@ -58,7 +58,7 @@ HAR 自带 `libentry.so` 与 FFmpeg 动态库，无需在 entry 再配置 `exter
 > 任一 SONAME 变更视为**破坏性更新**，需升级 major 版本；升级 FFmpeg
 > n10 或 zlib 主版本时必须重新核对整条 NEEDED 链。
 
-## 🚀 v0.3.0 更新亮点
+## 🚀 v0.3.1 更新亮点
 
 - libass 字幕：SRT / ASS / WebVTT，`subtitlePath/fontsDir` + `fontsdir` + `force_style`。
 - VideoPlan 视频链：trim/crop/color、任意坐标水印、图片旋转、2–6s PiP。

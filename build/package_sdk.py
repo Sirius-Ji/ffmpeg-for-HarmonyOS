@@ -4,7 +4,7 @@ import io
 import tarfile
 import zipfile
 
-VERSION = '0.3.0'
+VERSION = '0.3.1'
 ROOT = Path('.')
 OUT = ROOT / 'dist/release'
 OUT.mkdir(parents=True, exist_ok=True)
@@ -38,6 +38,15 @@ print('single-source: prebuilt == HAR libs')
 # Rebuild HAR with a manifest generated from the actual HAR bytes.
 with tarfile.open(HAR_IN, 'r:gz') as src:
     members = [(m, src.extractfile(m).read() if m.isfile() else None) for m in src.getmembers()]
+# Force HAR payload to the same prebuilt bytes used by per-ABI ZIPs.
+for abi in ABIS:
+    for n in NAMES:
+        target = 'package/libs/%s/%s' % (abi, n)
+        for i, (m, _d) in enumerate(members):
+            if m.name == target:
+                data = read(PRE / abi / 'lib' / n)
+                m.size = len(data)
+                members[i] = (m, data)
 base = [(m, d) for m, d in members if not (m.isfile() and m.name.endswith('/BUILD-INFO.txt'))]
 manifest = ['ffmpeg-ohos-har ' + VERSION]
 for m, d in base:

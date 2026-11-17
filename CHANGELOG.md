@@ -2,6 +2,17 @@
 
 所有值得注意的变更都记在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## v0.3.1（2026-11-17）
+
+### Fixed
+
+- 修复 v0.3.0 打包脚本漏拷 LICENSES 与 RELINK 的问题：HAR、SDK ZIP、per-ABI ZIP 均包含完整合规材料。
+- 补全 `Index.d.ts` 的 7 参数 `videoTranscode` 与 `TranscodeOptions` 类型。
+- 修复 `fontsDir` 大小写兼容：C++ 同时接受 `fontsDir` 与 `fontsdir`。
+- 清理 SHA256SUMS 幽灵条目：打包前清空 dist/release，并断言每个 SUMS 条目都对应实际资产。
+- 统一 HAR 与 ZIP 的二进制来源（同一 prebuilt 字节）。
+- versionCode 升至 3000102；bundleName 保持产品当前决定。
+
 ## v0.3.0（2026-11-17）
 
 ### Added
