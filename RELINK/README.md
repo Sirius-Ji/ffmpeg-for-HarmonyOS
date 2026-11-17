@@ -25,3 +25,19 @@ the FFmpeg build scripts; no GPL component is involved.
 
 The current release is not tagged v0.3.0 yet; this directory is the source
 offer prepared before the final release gate.
+
+## Application-side relink objects
+
+RELINK/obj/arm64-v8a/ contains the ten libentry.so object files produced by
+the DevEco release build, plus link-command.txt.
+
+Procedure:
+
+1. Rebuild libavfilter with the replacement FriBidi static library.
+2. Copy the new libavfilter.so.12 into the FFmpeg libs directory.
+3. Edit paths in RELINK/obj/arm64-v8a/link-command.txt if needed.
+4. Run the command from RELINK/obj/arm64-v8a/ to relink libentry.so.
+
+The object set is app-side (
+api_init, ideo_transcode, etc.);
+libavfilter itself is relinked separately with the FriBidi source/build script.

@@ -1,0 +1,20 @@
+# Reconstructed from DevEco CMake build.ninja (arm64-v8a, release).
+# Run from RELINK/obj/arm64-v8a. Replace fribidi-enabled libavfilter.so.12
+# with the relinked one in FFMPEG_LIBS before running.
+NDK="D:/Program Files/DevEco Studio/sdk/default/openharmony/native"
+FFMPEG_LIBS="D:/PublicProject/ffmpeg-for-HarmonyOS/harmony/ffmpeg_ohos/libs/arm64-v8a"
+"$NDK/llvm/bin/clang++.exe" --target=aarch64-linux-ohos --sysroot="$NDK/sysroot" \
+  -shared -fuse-ld=lld -Wl,--build-id=sha1 -Wl,--warn-shared-textrel \
+  -Wl,--fatal-warnings -lunwind -Wl,--no-undefined -Wl,-z,noexecstack \
+  -Wl,-rpath-link,"$FFMPEG_LIBS" \
+  -o libentry.so \
+  audio_player.cpp.o decoder.cpp.o extract_media.cpp.o hardware_probe.cpp.o \
+  napi_init.cpp.o ohcodec_decoder.cpp.o transcoder.cpp.o video_player.cpp.o \
+  video_probe.cpp.o video_transcode.cpp.o \
+  -L"$FFMPEG_LIBS" \
+  -lace_napi.z -lhilog_ndk.z -lohaudio -lnative_media_acodec \
+  -lnative_media_codecbase -lnative_media_core -lnative_media_vdec \
+  -lnative_window \
+  "$FFMPEG_LIBS/libavformat.so.63" "$FFMPEG_LIBS/libavcodec.so.63" \
+  "$FFMPEG_LIBS/libavutil.so.61" "$FFMPEG_LIBS/libavfilter.so.12" \
+  "$FFMPEG_LIBS/libswscale.so.10" "$FFMPEG_LIBS/libswresample.so.7" -lm
