@@ -373,10 +373,10 @@ napi_value VideoStopFn(napi_env env, napi_callback_info /*info*/) {
 }
 
 napi_value VideoTranscodeToMp4Fn(napi_env env, napi_callback_info info) {
-    size_t argc = 6;
-    napi_value argv[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    size_t argc = 7;
+    napi_value argv[7] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-    if (argc < 2) return ResultError(env, "videoTranscode(src,dst[,format[,resolution[,volume[,imagePath]]]]): missing args");
+    if (argc < 2) return ResultError(env, "videoTranscode(src,dst[,format[,resolution[,volume[,imagePath[,optionsJson]]]]]): missing args");
     const std::string src = GetString(env, argv[0]);
     const std::string dst = GetString(env, argv[1]);
     const std::string format = argc >= 3 ? GetString(env, argv[2]) : "mp4";
@@ -386,9 +386,10 @@ napi_value VideoTranscodeToMp4Fn(napi_env env, napi_callback_info info) {
     if (volume < 0.0) volume = 0.0;
     if (volume > 2.0) volume = 2.0;
     const std::string imagePath = argc >= 6 ? GetString(env, argv[5]) : "";
-    std::thread([src, dst, format, resolution, volume, imagePath]() {
+    const std::string optionsJson = argc >= 7 ? GetString(env, argv[6]) : "";
+    std::thread([src, dst, format, resolution, volume, imagePath, optionsJson]() {
         std::string json;
-        VideoTranscode(src, dst, format, resolution, (float)volume, imagePath, &json);
+        VideoTranscode(src, dst, format, resolution, (float)volume, imagePath, optionsJson, &json);
     }).detach();
     return MakeResult(env, true, "{\"state\":\"started\"}");
 }

@@ -7,7 +7,8 @@
 int ImageProbe(const std::string &path, std::string *result);
 int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                    const std::string &format, const std::string &resolution,
-                   float volume, const std::string &imagePath, std::string *result);
+                   float volume, const std::string &imagePath, const std::string &optionsJson,
+                   std::string *result);
 std::string VideoTranscodeStatusJson();
 
 #endif

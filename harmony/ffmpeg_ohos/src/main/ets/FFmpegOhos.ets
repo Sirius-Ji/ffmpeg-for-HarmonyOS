@@ -7,8 +7,8 @@ export interface NapiResult {
 
 export class FFmpegOhos {
   static videoTranscode(srcPath: string, dstPath: string, format?: string,
-    resolution?: string, volume?: number, imagePath?: string): NapiResult {
-    return native.videoTranscode(srcPath, dstPath, format, resolution, volume, imagePath) as NapiResult;
+    resolution?: string, volume?: number, imagePath?: string, optionsJson?: string): NapiResult {
+    return native.videoTranscode(srcPath, dstPath, format, resolution, volume, imagePath, optionsJson) as NapiResult;
   }
   static videoPlay(path: string, surfaceId: string, bufferMode?: boolean, cropMode?: boolean): NapiResult {
     return native.videoPlay(path, surfaceId, bufferMode, cropMode) as NapiResult;

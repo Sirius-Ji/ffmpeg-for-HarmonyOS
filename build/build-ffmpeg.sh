@@ -117,7 +117,7 @@ build_one() {
     --disable-vulkan \
     --disable-everything \
     --enable-avformat --enable-avcodec --enable-avutil --enable-swresample --enable-avfilter --enable-swscale \
-    --enable-libfreetype --enable-libharfbuzz --enable-filter=drawtext,scale,overlay,format \
+    --enable-libfreetype --enable-libharfbuzz --enable-filter=drawtext,scale,overlay,format,crop,trim,setpts,hue,colorlevels,colorchannelmixer,colorbalance,colortemperature,atempo,atrim,asetpts,afreqshift,aecho,volume,aformat,aresample,alimiter,rotate \
     --enable-ohcodec \
     --enable-decoder=h264_oh,hevc_oh,h264,hevc,aac,ac3,eac3,alac,ape,dca,flac,mp3,mp3float,opus,pcm_s16le,pcm_s24le,pcm_s32le,wmav2,png,mjpeg \
     --enable-encoder=aac,alac,flac,pcm_s16le,pcm_s24le,libmp3lame,opus,h264_oh,hevc_oh \

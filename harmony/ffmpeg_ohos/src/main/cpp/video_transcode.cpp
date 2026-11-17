@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -41,6 +42,38 @@ static std::string EscapeText(const std::string &in) {
     }
     return out;
 }
+static AVFrame *RotateLogo(AVFrame *src, int degrees) {
+    if (!src || src->format != AV_PIX_FMT_RGBA) return nullptr;
+    const double rad = degrees * 3.141592653589793 / 180.0;
+    const double c = std::cos(rad), s = std::sin(rad);
+    const int w = src->width, h = src->height;
+    const int ow = (int)std::ceil(std::fabs(w * c) + std::fabs(h * s));
+    const int oh = (int)std::ceil(std::fabs(w * s) + std::fabs(h * c));
+    AVFrame *out = av_frame_alloc();
+    out->format = AV_PIX_FMT_RGBA;
+    out->width = ow;
+    out->height = oh;
+    if (av_frame_get_buffer(out, 32) < 0) { av_frame_free(&out); return nullptr; }
+    const float cx = (w - 1) * 0.5f, cy = (h - 1) * 0.5f;
+    const float ncx = (ow - 1) * 0.5f, ncy = (oh - 1) * 0.5f;
+    const uint8_t *sp = src->data[0];
+    uint8_t *dp = out->data[0];
+    const int sl = src->linesize[0], dl = out->linesize[0];
+    memset(dp, 0, (size_t)dl * oh);
+    for (int y = 0; y < oh; ++y) {
+        for (int x = 0; x < ow; ++x) {
+            const float dx = x - ncx, dy = y - ncy;
+            const float sx = c * dx + s * dy + cx;
+            const float sy = -s * dx + c * dy + cy;
+            if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue;
+            const int ix = (int)(sx + 0.5f), iy = (int)(sy + 0.5f);
+            memcpy(dp + y * dl + x * 4, sp + iy * sl + ix * 4, 4);
+        }
+    }
+    OH_LOG_INFO(LOG_APP, "[overlay] rotated logo %dx%d -> %dx%d angle=%{public}d", w, h, ow, oh, degrees);
+    return out;
+}
+
 static AVFrame *LoadImageToFrame(const std::string &path, std::string *err) {
     AVFormatContext *fmt = nullptr;
     if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0) {
@@ -86,12 +119,201 @@ static AVFrame *LoadImageToFrame(const std::string &path, std::string *err) {
     else *err = "decode failed";
     return rgba;
 }
+struct VideoPlan {
+    bool trim = false;
+    double trimStart = 0.0;
+    double trimEnd = -1.0;
+    bool crop = false;
+    int cropW = 0;
+    int cropH = 0;
+    int cropX = INT_MIN;
+    int cropY = INT_MIN;
+    bool color = false;
+    double brightness = 0.0;
+    double contrast = 1.0;
+    double saturation = 1.0;
+    int temperature = 0;
+    std::string textX = "20";
+    std::string textY = "20";
+    std::string imageX = "W-w-20";
+    std::string imageY = "H-h-20";
+    int rotate = 0;
+    double speed = 1.0;
+    double audioTempo = 1.0;
+    int freqShift = 0;
+    bool echo = false;
+};
+
+static bool HasJsonKey(const std::string &j, const char *key) {
+    return j.find(std::string("\"") + key + "\"") != std::string::npos;
+}
+static double JsonNum(const std::string &j, const char *key, double def) {
+    size_t p = j.find(std::string("\"") + key + "\"");
+    if (p == std::string::npos) return def;
+    p = j.find(':', p);
+    if (p == std::string::npos) return def;
+    return strtod(j.c_str() + p + 1, nullptr);
+}
+static std::string JsonStr(const std::string &j, const char *key, const std::string &def) {
+    size_t p = j.find(std::string("\"") + key + "\"");
+    if (p == std::string::npos) return def;
+    p = j.find(':', p);
+    if (p == std::string::npos) return def;
+    p = j.find('"', p);
+    if (p == std::string::npos) return def;
+    size_t e = j.find('"', p + 1);
+    if (e == std::string::npos) return def;
+    return j.substr(p + 1, e - p - 1);
+}
+static VideoPlan ParseVideoPlan(const std::string &j) {
+    VideoPlan p;
+    if (j.empty()) return p;
+    p.trim = HasJsonKey(j, "trimStart") || HasJsonKey(j, "trimEnd");
+    p.trimStart = JsonNum(j, "trimStart", 0.0);
+    p.trimEnd = JsonNum(j, "trimEnd", -1.0);
+    p.crop = JsonNum(j, "cropW", 0) > 0 && JsonNum(j, "cropH", 0) > 0;
+    p.cropW = (int)JsonNum(j, "cropW", 0);
+    p.cropH = (int)JsonNum(j, "cropH", 0);
+    p.cropX = HasJsonKey(j, "cropX") ? (int)JsonNum(j, "cropX", 0) : INT_MIN;
+    p.cropY = HasJsonKey(j, "cropY") ? (int)JsonNum(j, "cropY", 0) : INT_MIN;
+    p.color = HasJsonKey(j, "brightness") || HasJsonKey(j, "contrast") ||
+              HasJsonKey(j, "saturation") || HasJsonKey(j, "temperature");
+    p.brightness = JsonNum(j, "brightness", 0.0);
+    p.contrast = JsonNum(j, "contrast", 1.0);
+    p.saturation = JsonNum(j, "saturation", 1.0);
+    p.temperature = (int)JsonNum(j, "temperature", 0);
+    p.textX = JsonStr(j, "textX", JsonStr(j, "x", p.textX));
+    p.textY = JsonStr(j, "textY", JsonStr(j, "y", p.textY));
+    p.imageX = JsonStr(j, "imageX", JsonStr(j, "x", p.imageX));
+    p.imageY = JsonStr(j, "imageY", JsonStr(j, "y", p.imageY));
+    p.rotate = (int)JsonNum(j, "rotate", 0);
+    if (p.rotate < 0) p.rotate = 0;
+    if (p.rotate > 360) p.rotate = 360;
+    p.speed = JsonNum(j, "speed", 1.0);
+    if (p.speed < 0.25) p.speed = 0.25;
+    if (p.speed > 4.0) p.speed = 4.0;
+    p.audioTempo = JsonNum(j, "atempo", p.speed);
+    if (p.audioTempo < 0.25) p.audioTempo = 0.25;
+    if (p.audioTempo > 4.0) p.audioTempo = 4.0;
+    p.freqShift = (int)JsonNum(j, "freqShift", 0);
+    p.echo = HasJsonKey(j, "echo") && JsonNum(j, "echo", 0) != 0;
+    return p;
+}
+
+class AudioFilterGraph {
+public:
+    ~AudioFilterGraph() { if (graph_) avfilter_graph_free(&graph_); }
+    bool Init(const VideoPlan &plan, float volume) {
+        graph_ = avfilter_graph_alloc();
+        if (!graph_) return false;
+        if (avfilter_graph_create_filter(&src_, avfilter_get_by_name("abuffer"), "ain",
+            "sample_rate=48000:sample_fmt=fltp:channel_layout=stereo:time_base=1/48000",
+            nullptr, graph_) < 0) return false;
+        AVFilterContext *prev = src_;
+        auto add = [&](AVFilterContext **ctx, const char *name, const char *args) -> bool {
+            if (avfilter_graph_create_filter(ctx, avfilter_get_by_name(name), name, args, nullptr, graph_) < 0) return false;
+            if (avfilter_link(prev, 0, *ctx, 0) < 0) return false;
+            prev = *ctx;
+            return true;
+        };
+        if (plan.trim) {
+            char a[96];
+            if (plan.trimEnd >= 0.0)
+                snprintf(a, sizeof(a), "start=%.3f:end=%.3f", plan.trimStart, plan.trimEnd);
+            else
+                snprintf(a, sizeof(a), "start=%.3f", plan.trimStart);
+            if (!add(&trim_, "atrim", a)) return false;
+            if (!add(&setpts_, "asetpts", "PTS-STARTPTS")) return false;
+        }
+        if (plan.audioTempo != 1.0) {
+            char a[64];
+            snprintf(a, sizeof(a), "tempo=%.5f", plan.audioTempo);
+            if (!add(&tempo_, "atempo", a)) return false;
+        }
+        if (plan.freqShift != 0) {
+            char a[64];
+            snprintf(a, sizeof(a), "shift=%d:order=8:level=1", plan.freqShift);
+            if (!add(&freq_, "afreqshift", a)) return false;
+        }
+        if (plan.echo) {
+            if (!add(&echo_, "aecho", "0.8:0.9:40|60:0.4|0.3")) return false;
+        }
+        if (volume != 1.0f) {
+            char a[32];
+            snprintf(a, sizeof(a), "volume=%.3f", volume);
+            if (!add(&vol_, "volume", a)) return false;
+        }
+        if (!add(&limit_, "alimiter", "limit=0.95")) return false;
+        if (!add(&fmt_, "aformat", "sample_fmts=flt:sample_rates=48000:channel_layouts=stereo")) return false;
+        if (avfilter_graph_create_filter(&sink_, avfilter_get_by_name("abuffersink"), "aout",
+                                         nullptr, nullptr, graph_) < 0) return false;
+        if (avfilter_link(prev, 0, sink_, 0) < 0) return false;
+        if (avfilter_graph_config(graph_, nullptr) < 0) return false;
+        ready_ = true;
+        return true;
+    }
+    int Feed(const float *pcm, int frames, std::vector<float> *out) {
+        if (!ready_) return -1;
+        int off = 0;
+        while (off < frames) {
+            const int n = std::min(1024, frames - off);
+            AVFrame *f = av_frame_alloc();
+            f->format = AV_SAMPLE_FMT_FLTP;
+            f->sample_rate = 48000;
+            av_channel_layout_default(&f->ch_layout, 2);
+            f->nb_samples = n;
+            if (av_frame_get_buffer(f, 0) < 0) { av_frame_free(&f); return -1; }
+            float *l = (float *)f->extended_data[0];
+            float *r = (float *)f->extended_data[1];
+            for (int i = 0; i < n; ++i) {
+                l[i] = pcm[(size_t)(off + i) * 2];
+                r[i] = pcm[(size_t)(off + i) * 2 + 1];
+            }
+            f->pts = off;
+            int ret = av_buffersrc_add_frame_flags(src_, f, AV_BUFFERSRC_FLAG_KEEP_REF);
+            av_frame_free(&f);
+            if (ret < 0) return ret;
+            Drain(out);
+            off += n;
+        }
+        return 0;
+    }
+    int Flush(std::vector<float> *out) {
+        if (!ready_) return -1;
+        int ret = av_buffersrc_add_frame_flags(src_, nullptr, 0);
+        if (ret < 0) return ret;
+        return Drain(out, true);
+    }
+private:
+    int Drain(std::vector<float> *out, bool eos = false) {
+        for (;;) {
+            AVFrame *f = av_frame_alloc();
+            int r = av_buffersink_get_frame(sink_, f);
+            if (r == AVERROR(EAGAIN)) { av_frame_free(&f); break; }
+            if (r == AVERROR_EOF) { av_frame_free(&f); break; }
+            if (r < 0) { av_frame_free(&f); return r; }
+            const int n = f->nb_samples;
+            if (f->format == AV_SAMPLE_FMT_FLT) {
+                const float *p = (const float *)f->data[0];
+                out->insert(out->end(), p, p + (size_t)n * 2);
+            }
+            av_frame_free(&f);
+            if (eos) continue;
+        }
+        return 0;
+    }
+    AVFilterGraph *graph_ = nullptr;
+    AVFilterContext *src_ = nullptr, *sink_ = nullptr, *trim_ = nullptr, *setpts_ = nullptr;
+    AVFilterContext *tempo_ = nullptr, *freq_ = nullptr, *echo_ = nullptr, *vol_ = nullptr, *limit_ = nullptr, *fmt_ = nullptr;
+    bool ready_ = false;
+};
+
 class WatermarkFilter {
 public:
     ~WatermarkFilter() { if (graph_) avfilter_graph_free(&graph_); }
     bool Init(const std::string &text, const std::string &position, int fontSize,
               const std::string &colorIn, const std::string &fontPath, int alpha, bool bold,
-              int inW, int inH, int outW, int outH) {
+              int inW, int inH, int outW, int outH, AVRational tb) {
         graph_ = avfilter_graph_alloc();
         if (!graph_) return false;
         const AVFilter *scaleFilter = avfilter_get_by_name("scale");
@@ -100,8 +322,8 @@ public:
         if (!scaleFilter) return false;
         char args[256];
         snprintf(args, sizeof(args),
-                 "video_size=%dx%d:pix_fmt=nv12:time_base=1/24:pixel_aspect=1/1",
-                 inW, inH);
+                 "video_size=%dx%d:pix_fmt=nv12:time_base=%d/%d:pixel_aspect=1/1",
+                 inW, inH, tb.num, tb.den);
         if (avfilter_graph_create_filter(&src_, avfilter_get_by_name("buffer"), "in",
                                          args, nullptr, graph_) < 0) return false;
         if (avfilter_graph_create_filter(&sink_, avfilter_get_by_name("buffersink"), "out",
@@ -173,48 +395,163 @@ private:
 };
 class ImageOverlayFilter {
 public:
-    ~ImageOverlayFilter() { if (graph_) avfilter_graph_free(&graph_); }
+    ~ImageOverlayFilter() {
+        if (logoFrame_) av_frame_free(&logoFrame_);
+        if (graph_) avfilter_graph_free(&graph_);
+    }
     bool Init(int inW, int inH, int outW, int outH, int logoW, int logoH,
-              const std::string &fontPath, const std::string &text) {
+              const std::string &fontPath, const std::string &text, AVRational tb,
+              const VideoPlan &plan) {
         graph_ = avfilter_graph_alloc();
         if (!graph_) return false;
-        char mainArgs[128], logoArgs[128];
-        snprintf(mainArgs, sizeof(mainArgs), "video_size=%dx%d:pix_fmt=nv12:time_base=1/24:pixel_aspect=1/1", inW, inH);
-        snprintf(logoArgs, sizeof(logoArgs), "video_size=%dx%d:pix_fmt=rgba:time_base=1/24:pixel_aspect=1/1", logoW, logoH);
-        if (avfilter_graph_create_filter(&main_, avfilter_get_by_name("buffer"), "main", mainArgs, nullptr, graph_) < 0) return false;
-        if (avfilter_graph_create_filter(&logo_, avfilter_get_by_name("buffer"), "logo", logoArgs, nullptr, graph_) < 0) return false;
-        if (avfilter_graph_create_filter(&overlay_, avfilter_get_by_name("overlay"), "ov", "x=W-w-20:y=H-h-20", nullptr, graph_) < 0) return false;
-        if (avfilter_graph_create_filter(&fmt_, avfilter_get_by_name("format"), "fmt", "pix_fmts=nv12", nullptr, graph_) < 0) return false;
+        char mainArgs[192], logoArgs[192];
+        snprintf(mainArgs, sizeof(mainArgs), "video_size=%dx%d:pix_fmt=nv12:time_base=%d/%d:pixel_aspect=1/1", inW, inH, tb.num, tb.den);
+        snprintf(logoArgs, sizeof(logoArgs), "video_size=%dx%d:pix_fmt=rgba:time_base=%d/%d:pixel_aspect=1/1", logoW, logoH, tb.num, tb.den);
+            const bool hasLogo = logoW > 0 && logoH > 0;
+        OH_LOG_INFO(LOG_APP, "[plan] init in=%{public}dx%{public}d out=%{public}dx%{public}d logo=%{public}d trim=%{public}d crop=%{public}d color=%{public}d rotate=%{public}d speed=%.3f textX=%{public}s textY=%{public}s",
+                    inW, inH, outW, outH, hasLogo ? 1 : 0, plan.trim ? 1 : 0,
+                    plan.crop ? 1 : 0, plan.color ? 1 : 0, plan.rotate, plan.speed,
+                    plan.textX.c_str(), plan.textY.c_str());
+        if (avfilter_graph_create_filter(&main_, avfilter_get_by_name("buffer"), "main", mainArgs, nullptr, graph_) < 0) {
+            OH_LOG_ERROR(LOG_APP, "[plan] create main buffer failed");
+            return false;
+        }
+        if (hasLogo) {
+            snprintf(logoArgs, sizeof(logoArgs), "video_size=%dx%d:pix_fmt=rgba:time_base=%d/%d:pixel_aspect=1/1", logoW, logoH, tb.num, tb.den);
+            int lr = avfilter_graph_create_filter(&logo_, avfilter_get_by_name("buffer"), "logo", logoArgs, nullptr, graph_);
+            if (lr < 0) {
+                char eb[128] = {0}; av_strerror(lr, eb, sizeof(eb));
+                OH_LOG_ERROR(LOG_APP, "[plan] create logo failed rc=%{public}d err=%{public}s args=%{public}s",
+                             lr, eb, logoArgs);
+                return false;
+            }
+        }
+
+        AVFilterContext *prev = main_;
+        auto add = [&](AVFilterContext **ctx, const char *name, const char *args) -> bool {
+            int cr = avfilter_graph_create_filter(ctx, avfilter_get_by_name(name), name, args, nullptr, graph_);
+            if (cr < 0) {
+                char eb[128] = {0}; av_strerror(cr, eb, sizeof(eb));
+                OH_LOG_ERROR(LOG_APP, "[plan] create %{public}s failed rc=%{public}d err=%{public}s args=%{public}s",
+                             name, cr, eb, args);
+                return false;
+            }
+            int lr = avfilter_link(prev, 0, *ctx, 0);
+            if (lr < 0) {
+                char eb[128] = {0}; av_strerror(lr, eb, sizeof(eb));
+                OH_LOG_ERROR(LOG_APP, "[plan] link %{public}s failed rc=%{public}d err=%{public}s", name, lr, eb);
+                return false;
+            }
+            prev = *ctx;
+            return true;
+        };
+
+        if (plan.trim) {
+            OH_LOG_INFO(LOG_APP, "[plan] trim handled in C++ start=%.3f end=%.3f", plan.trimStart, plan.trimEnd);
+        }
+        if (plan.crop && plan.cropW > 0 && plan.cropH > 0) {
+            char ca[160];
+            const char *x = plan.cropX == INT_MIN ? "(in_w-out_w)/2" : "cropX";
+            const char *y = plan.cropY == INT_MIN ? "(in_h-out_h)/2" : "cropY";
+            if (plan.cropX == INT_MIN && plan.cropY == INT_MIN)
+                snprintf(ca, sizeof(ca), "w=%d:h=%d:x=%s:y=%s", plan.cropW, plan.cropH, x, y);
+            else
+                snprintf(ca, sizeof(ca), "w=%d:h=%d:x=%d:y=%d",
+                         plan.cropW, plan.cropH,
+                         plan.cropX == INT_MIN ? (inW - plan.cropW) / 2 : plan.cropX,
+                         plan.cropY == INT_MIN ? (inH - plan.cropH) / 2 : plan.cropY);
+            if (!add(&crop_, "crop", ca)) return false;
+        }
         char sc[64];
         snprintf(sc, sizeof(sc), "w=%d:h=%d", outW, outH);
-        if (avfilter_graph_create_filter(&scale_, avfilter_get_by_name("scale"), "scale", sc, nullptr, graph_) < 0) return false;
+        if (!add(&scale_, "scale", sc)) return false;
+
+        if (plan.color) {
+            if (plan.brightness != 0.0 || plan.saturation != 1.0) {
+                char ha[96];
+                snprintf(ha, sizeof(ha), "b=%.4f:s=%.4f", plan.brightness, plan.saturation);
+                if (!add(&hue_, "hue", ha)) return false;
+            }
+            if (plan.contrast != 1.0) {
+                const double c = plan.contrast < 0.01 ? 0.01 : plan.contrast;
+                double lo = 0.5 - 0.5 / c;
+                double hi = 0.5 + 0.5 / c;
+                if (lo < 0.0) lo = 0.0;
+                if (hi > 1.0) hi = 1.0;
+                char la[256];
+                snprintf(la, sizeof(la),
+                         "rimin=%.4f:gimin=%.4f:bimin=%.4f:rimax=%.4f:gimax=%.4f:bimax=%.4f",
+                         lo, lo, lo, hi, hi, hi);
+                if (!add(&levels_, "colorlevels", la)) return false;
+            }
+            if (plan.temperature > 0) {
+                char ta[64];
+                snprintf(ta, sizeof(ta), "temperature=%d:mix=1", plan.temperature);
+                if (!add(&temp_, "colortemperature", ta)) return false;
+            }
+        }
+
+        if (hasLogo) {
+            char oa[192];
+            snprintf(oa, sizeof(oa), "x=%s:y=%s:eof_action=repeat:repeatlast=1", plan.imageX.c_str(), plan.imageY.c_str());
+            if (!add(&overlay_, "overlay", oa)) return false;
+            if (avfilter_link(logo_, 0, overlay_, 1) < 0) return false;
+        }
+
         char dt[512];
-        snprintf(dt, sizeof(dt), "fontfile=%s:text='%s':x=20:y=20:fontsize=48:fontcolor=white",
-                 fontPath.c_str(), EscapeText(text).c_str());
-        if (avfilter_graph_create_filter(&draw_, avfilter_get_by_name("drawtext"), "draw", dt, nullptr, graph_) < 0) return false;
-        if (avfilter_graph_create_filter(&sink_, avfilter_get_by_name("buffersink"), "out", nullptr, nullptr, graph_) < 0) return false;
-        if (avfilter_link(main_, 0, overlay_, 0) < 0 || avfilter_link(logo_, 0, overlay_, 1) < 0 ||
-            avfilter_link(overlay_, 0, scale_, 0) < 0 || avfilter_link(scale_, 0, draw_, 0) < 0 ||
-            avfilter_link(draw_, 0, fmt_, 0) < 0 || avfilter_link(fmt_, 0, sink_, 0) < 0) return false;
-        if (avfilter_graph_config(graph_, nullptr) < 0) return false;
+        snprintf(dt, sizeof(dt), "fontfile=%s:text='%s':x=%s:y=%s:fontsize=48:fontcolor=white",
+                 fontPath.c_str(), EscapeText(text).c_str(), plan.textX.c_str(), plan.textY.c_str());
+        if (!add(&draw_, "drawtext", dt)) return false;
+        if (!add(&fmt_, "format", "pix_fmts=nv12")) return false;
+        if (avfilter_graph_create_filter(&sink_, avfilter_get_by_name("buffersink"), "out",
+                                         nullptr, nullptr, graph_) < 0) return false;
+        if (avfilter_link(prev, 0, sink_, 0) < 0) return false;
+        int gr = avfilter_graph_config(graph_, nullptr);
+        if (gr < 0) {
+            char eb[128] = {0}; av_strerror(gr, eb, sizeof(eb));
+            OH_LOG_ERROR(LOG_APP, "[plan] graph_config failed rc=%{public}d err=%{public}s", gr, eb);
+            return false;
+        }
         ready_ = true; return true;
     }
     int SendLogo(AVFrame *f) {
-        int r = av_buffersrc_add_frame_flags(logo_, f, AV_BUFFERSRC_FLAG_KEEP_REF);
-        if (r < 0) return r;
-        return av_buffersrc_add_frame_flags(logo_, nullptr, 0);
+        if (!logo_) return -1;
+        if (logoFrame_) av_frame_free(&logoFrame_);
+        logoFrame_ = av_frame_clone(f);
+        logoPts_ = 0;
+        OH_LOG_INFO(LOG_APP, "[plan] logo ready %{public}dx%{public}d fmt=%{public}d",
+                    f ? f->width : -1, f ? f->height : -1, f ? f->format : -1);
+        return logoFrame_ ? 0 : AVERROR(ENOMEM);
     }
     int Run(AVFrame *in, AVFrame *out) {
         if (!ready_) return -1;
+        if (logoFrame_) {
+            AVFrame *lf = av_frame_clone(logoFrame_);
+            if (!lf) return AVERROR(ENOMEM);
+            lf->pts = logoPts_++;
+            int lr = av_buffersrc_add_frame_flags(logo_, lf, AV_BUFFERSRC_FLAG_KEEP_REF);
+            av_frame_free(&lf);
+            if (lr < 0) return lr;
+        }
         int r = av_buffersrc_add_frame_flags(main_, in, AV_BUFFERSRC_FLAG_KEEP_REF);
         if (r < 0) return r;
-        return av_buffersink_get_frame(sink_, out);
+        int sr = av_buffersink_get_frame(sink_, out);
+        if (runCount_ < 8 || sr == AVERROR_EOF) {
+            OH_LOG_INFO(LOG_APP, "[plan] sink ret=%{public}d inpts=%{public}lld run=%{public}d",
+                        sr, (long long)in->pts, runCount_);
+        }
+        runCount_++;
+        return sr;
     }
     int SendEOS() { return av_buffersrc_add_frame_flags(main_, nullptr, 0); }
     int Receive(AVFrame *out) { return av_buffersink_get_frame(sink_, out); }
 private:
     AVFilterGraph *graph_ = nullptr;
     AVFilterContext *main_ = nullptr, *logo_ = nullptr, *overlay_ = nullptr, *scale_ = nullptr, *draw_ = nullptr, *fmt_ = nullptr, *sink_ = nullptr;
+    AVFilterContext *trim_ = nullptr, *setpts_ = nullptr, *crop_ = nullptr, *hue_ = nullptr, *levels_ = nullptr, *temp_ = nullptr, *rotate_ = nullptr, *logoFmt_ = nullptr;
+    int runCount_ = 0;
+    AVFrame *logoFrame_ = nullptr;
+    int64_t logoPts_ = 0;
     bool ready_ = false;
 };
 struct OutPkt {
@@ -258,7 +595,7 @@ void ScaleToNv12(const AVFrame *src, AVFrame *dst) {
 }
 static int MuxTsThenMp4(std::vector<OutPkt> &packets, AVCodecContext *venc,
                         AVCodecContext *aenc, const std::string &dstPath,
-                        const std::string &container) {
+                        const std::string &container, double speed) {
     const std::string tsPath = dstPath + ".ts";
     AVFormatContext *ts = nullptr;
     if (avformat_alloc_output_context2(&ts, nullptr, "mpegts", tsPath.c_str()) < 0) return -1;
@@ -298,9 +635,16 @@ static int MuxTsThenMp4(std::vector<OutPkt> &packets, AVCodecContext *venc,
         AVStream *st = p.stream == 0 ? vst : ast;
         if (!st) { av_packet_free(&p.pkt); continue; }
         av_packet_rescale_ts(p.pkt, p.tb, st->time_base);
+        if (p.stream == 0 && speed > 0.0 && speed != 1.0) {
+            const AVRational sp = av_d2q(speed, 1000);
+            p.pkt->pts = av_rescale_q(p.pkt->pts, AVRational{sp.den, sp.num}, AVRational{1, 1});
+            p.pkt->dts = av_rescale_q(p.pkt->dts, AVRational{sp.den, sp.num}, AVRational{1, 1});
+            p.pkt->duration = av_rescale_q(p.pkt->duration, AVRational{sp.den, sp.num}, AVRational{1, 1});
+        }
         p.pkt->stream_index = st->index;
         p.pkt->pos = -1;
         if (p.stream == 0) {
+            if (p.pkt->dts <= lastVideoDts) p.pkt->dts = lastVideoDts + 1;
             if (p.pkt->dts <= lastVideoDts)
                 OH_LOG_WARN(LOG_APP, "[vtrans] DTS regress last=%{public}lld now=%{public}lld",
                             (long long)lastVideoDts, (long long)p.pkt->dts);
@@ -392,7 +736,8 @@ int ImageProbe(const std::string &path, std::string *result) {
 
 int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                    const std::string &format, const std::string &resolution,
-                   float volume, const std::string &imagePath, std::string *result) {
+                   float volume, const std::string &imagePath, const std::string &optionsJson,
+                   std::string *result) {
     SetStatus(1, "{\"state\":1}");
     OH_LOG_INFO(LOG_APP, "[M4.6_BUILD_VER] Native Res=%{public}s scale_enabled=1", resolution.c_str());
     const bool watermark = format.rfind("watermark|", 0) == 0;
@@ -437,6 +782,12 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
     const bool hevc = (realFormat == "hevc" || realFormat == "h265");
     const bool flv = (realFormat == "flv");
     const std::string container = (realFormat == "mkv") ? "matroska" : (flv ? "flv" : "mp4");
+    VideoPlan plan = ParseVideoPlan(optionsJson);
+    OH_LOG_INFO(LOG_APP, "[plan] json=%{public}s trim=%{public}d [%.3f,%.3f] crop=%{public}d %{public}dx%{public}d color=%{public}d b=%.2f c=%.2f s=%.2f temp=%{public}d rotate=%{public}d speed=%.2f atempo=%.2f",
+                optionsJson.c_str(), plan.trim ? 1 : 0, plan.trimStart, plan.trimEnd,
+                plan.crop ? 1 : 0, plan.cropW, plan.cropH, plan.color ? 1 : 0,
+                plan.brightness, plan.contrast, plan.saturation, plan.temperature,
+                plan.rotate, plan.speed, plan.audioTempo);
     OH_LOG_INFO(LOG_APP, "[vtrans] stage=0 start");
     AVFormatContext *in = nullptr, *out = nullptr;
     AVCodecContext *vdec = nullptr, *venc = nullptr, *adec = nullptr, *aenc = nullptr;
@@ -508,7 +859,22 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                 av_frame_free(&frame);
                 av_packet_free(&pkt);
             }
+            float pcmGain = volume;
             if (!failed) {
+                const bool audioPlanActive = plan.trim || plan.audioTempo != 1.0 ||
+                                             plan.freqShift != 0 || plan.echo || volume != 1.0f;
+                if (audioPlanActive) {
+                    AudioFilterGraph ag;
+                    if (ag.Init(plan, volume)) {
+                        std::vector<float> filtered;
+                        ag.Feed(pcm.data(), (int)(pcm.size() / 2), &filtered);
+                        ag.Flush(&filtered);
+                        pcm.swap(filtered);
+                        pcmGain = 1.0f;
+                    } else {
+                        OH_LOG_ERROR(LOG_APP, "[audio] filter graph init failed, fallback");
+                    }
+                }
                 const AVCodec *ae = avcodec_find_encoder(AV_CODEC_ID_AAC);
                 aenc = avcodec_alloc_context3(ae);
                 aenc->sample_rate = 48000;
@@ -537,8 +903,8 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                     float *l = (float *)af->extended_data[0];
                     float *r = (float *)af->extended_data[1];
                     for (int i = 0; i < n; ++i) {
-                        float lv = pcm[(size_t)(pos + i) * 2] * volume;
-                        float rv = pcm[(size_t)(pos + i) * 2 + 1] * volume;
+                        float lv = pcm[(size_t)(pos + i) * 2] * pcmGain;
+                        float rv = pcm[(size_t)(pos + i) * 2 + 1] * pcmGain;
                         l[i] = lv > 1.0f ? 1.0f : (lv < -1.0f ? -1.0f : lv);
                         r[i] = rv > 1.0f ? 1.0f : (rv < -1.0f ? -1.0f : rv);
                     }
@@ -589,6 +955,11 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
             if (!failed && !e) failed = 4;
             AVRational srcRate = in->streams[vidx]->avg_frame_rate;
             if (srcRate.num <= 0 || srcRate.den <= 0) srcRate = AVRational{24, 1};
+            AVRational encRate = srcRate;
+            if (plan.speed != 1.0) {
+                encRate.num = (int)(srcRate.num * plan.speed + 0.5);
+                if (encRate.num < 1) encRate.num = 1;
+            }
             if (!failed) {
                 venc = avcodec_alloc_context3(e);
                 venc->width = outW;
@@ -609,35 +980,68 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                 frame = av_frame_alloc();
                 nv = av_frame_alloc();
                 nv->format = AV_PIX_FMT_NV12;
-                nv->width = watermark ? inW : outW;
-                nv->height = watermark ? inH : outH;
+                nv->width = (watermark || !imagePath.empty()) ? inW : outW;
+                nv->height = (watermark || !imagePath.empty()) ? inH : outH;
                 if (av_frame_get_buffer(nv, 32) < 0) failed = 6;
             }
             if (!failed) {
                 pkt = av_packet_alloc();
                 const AVRational outTb = AVRational{srcRate.den, srcRate.num};
-                WatermarkFilter wm;
+                const int64_t trimStartPts = plan.trim ? (int64_t)(plan.trimStart * srcRate.num / srcRate.den) : 0;
+                const int64_t trimEndPts = (plan.trim && plan.trimEnd >= 0.0)
+                    ? (int64_t)(plan.trimEnd * srcRate.num / srcRate.den) : INT64_MAX;
+                if (!HasJsonKey(optionsJson, "textX") && !HasJsonKey(optionsJson, "x")) {
+                    if (wmPosition == "top-right") { plan.textX = "w-tw-24"; plan.textY = "24"; }
+                    else if (wmPosition == "bottom-left") { plan.textX = "24"; plan.textY = "h-th-24"; }
+                    else if (wmPosition == "bottom-right") { plan.textX = "w-tw-24"; plan.textY = "h-th-24"; }
+                    else if (wmPosition == "center") { plan.textX = "(w-tw)/2"; plan.textY = "(h-th)/2"; }
+                    else { plan.textX = "24"; plan.textY = "24"; }
+                }
                 ImageOverlayFilter img;
-                bool useImg = false;
+                AVFrame *logoFrame = nullptr;
                 if (!imagePath.empty()) {
                     std::string imgErr;
-                    AVFrame *logoFrame = LoadImageToFrame(imagePath, &imgErr);
-                    if (logoFrame && img.Init(inW, inH, outW, outH, logoFrame->width, logoFrame->height, fontPath, wmText) &&
-                        img.SendLogo(logoFrame) >= 0) {
-                        useImg = true;
-                    } else {
-                        OH_LOG_ERROR(LOG_APP, "[overlay] init failed: %{public}s", imgErr.c_str());
+                    logoFrame = LoadImageToFrame(imagePath, &imgErr);
+                    if (logoFrame && plan.rotate != 0) {
+                        AVFrame *rot = RotateLogo(logoFrame, plan.rotate);
+                        if (rot) { av_frame_free(&logoFrame); logoFrame = rot; }
                     }
-                    if (logoFrame) av_frame_free(&logoFrame);
+                    if (!logoFrame) OH_LOG_ERROR(LOG_APP, "[overlay] image load failed: %{public}s", imgErr.c_str());
                 }
-                bool wmOk = useImg || (watermark &&
-                    wm.Init(wmText, wmPosition, wmFontSize, wmColor, fontPath, wmAlpha, wmBold, inW, inH, outW, outH));
-                OH_LOG_INFO(LOG_APP, "[vtrans] image=%{public}d text=%{public}d useImg=%{public}d",
-                            imagePath.empty() ? 0 : 1, watermark ? 1 : 0, useImg ? 1 : 0);
-                if (watermark && !wmOk) {
+                const bool useGraph = watermark || logoFrame != nullptr;
+                bool wmOk = false;
+                if (useGraph) {
+                    wmOk = img.Init(inW, inH, outW, outH,
+                                    logoFrame ? logoFrame->width : 0,
+                                    logoFrame ? logoFrame->height : 0,
+                                    fontPath, wmText, srcRate, plan);
+                    if (wmOk && logoFrame) wmOk = img.SendLogo(logoFrame) >= 0;
+                }
+                if (logoFrame) av_frame_free(&logoFrame);
+                OH_LOG_INFO(LOG_APP, "[vtrans] image=%{public}d text=%{public}d usePlan=%{public}d rotate=%{public}d",
+                            imagePath.empty() ? 0 : 1, watermark ? 1 : 0, wmOk ? 1 : 0, plan.rotate);
+                if (useGraph && !wmOk) {
                     failed = 20;
                     SetStatus(3, "{\"state\":3,\"code\":\"E_FILTER_INIT_FAILED\"}");
                 }
+                double speedAcc = 0.0;
+                int64_t sendPts = 0;
+                auto enqueueVideoPacket = [&]() {
+                    OutPkt op;
+                    op.pkt = av_packet_clone(pkt);
+                    op.stream = 0;
+                    const bool bad_ts = (pkt->dts == AV_NOPTS_VALUE || pkt->pts == 0);
+                    int64_t stamp = bad_ts ? vpackets : (pkt->dts != AV_NOPTS_VALUE ? pkt->dts : pkt->pts);
+                    if (bad_ts) {
+                        op.pkt->pts = stamp;
+                        op.pkt->dts = stamp;
+                    }
+                    op.when = stamp * av_q2d(outTb);
+                    op.tb = outTb;
+                    packets.push_back(op);
+                    vpackets++;
+                    av_packet_unref(pkt);
+                };
                 while (!failed && av_read_frame(in, pkt) >= 0) {
                     if (pkt->stream_index != vidx) { av_packet_unref(pkt); continue; }
                     if (avcodec_send_packet(vdec, pkt) == 0) {
@@ -645,39 +1049,58 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                             av_frame_make_writable(nv);
                             ScaleToNv12(frame, nv);
                             nv->pts = frames++;
+                            if (plan.trim) {
+                                if (nv->pts < trimStartPts || nv->pts >= trimEndPts) continue;
+                                nv->pts -= trimStartPts;
+                            }
                             AVFrame *filtered = nullptr;
                             AVFrame *sendFrame = nv;
                             if (wmOk) {
                                 filtered = av_frame_alloc();
-                                if (filtered && (useImg ? img.Run(nv, filtered) : wm.Run(nv, filtered)) == 0) {
-                                    filtered->pts = nv->pts;
+                                int fr = filtered ? img.Run(nv, filtered) : -1;
+                                if (fr == 0) {
+                                    if (filtered->pts == AV_NOPTS_VALUE) filtered->pts = nv->pts;
                                     sendFrame = filtered;
+                                } else if (fr == AVERROR(EAGAIN) || fr == AVERROR_EOF) {
+                                    if (filtered) av_frame_free(&filtered);
+                                    continue;
                                 } else {
                                     if (filtered) av_frame_free(&filtered);
                                     filtered = nullptr;
                                 }
                             }
-                            if (avcodec_send_frame(venc, sendFrame) == 0) {
+                            if (sendFrame) sendFrame->pts = sendPts;
+                            if (sendPts < 5 || sendPts >= 235) {
+                                OH_LOG_INFO(LOG_APP, "[plan] send#%{public}lld pts=%{public}lld tb=%{public}d/%{public}d fps=%{public}d/%{public}d",
+                                            (long long)sendPts, (long long)sendFrame->pts,
+                                            venc->time_base.num, venc->time_base.den,
+                                            venc->framerate.num, venc->framerate.den);
+                            }
+                            sendPts++;
+                            int sfr;
+                            for (;;) {
+                                sfr = avcodec_send_frame(venc, sendFrame);
+                                if (sfr != AVERROR(EAGAIN)) break;
                                 while (avcodec_receive_packet(venc, pkt) == 0) {
-                                    OutPkt op;
-                                    op.pkt = av_packet_clone(pkt);
-                                    op.stream = 0;
-                                    const bool bad_ts = (pkt->dts == AV_NOPTS_VALUE || pkt->pts == 0);
-                                    int64_t stamp = bad_ts ? vpackets : (pkt->dts != AV_NOPTS_VALUE ? pkt->dts : pkt->pts);
-                                    if (bad_ts) {
-                                        op.pkt->pts = stamp;
-                                        op.pkt->dts = stamp;
-                                    }
-                                    op.when = stamp * av_q2d(outTb);
-                                    op.tb = outTb;
+                                    OH_LOG_INFO(LOG_APP, "[plan] drain pkt pts=%{public}lld dts=%{public}lld",
+                                                (long long)pkt->pts, (long long)pkt->dts);
+                                    enqueueVideoPacket();
+                                }
+                            }
+                            if (sfr < 0) {
+                                char eb[128] = {0}; av_strerror(sfr, eb, sizeof(eb));
+                                OH_LOG_ERROR(LOG_APP, "[plan] send_frame rc=%{public}d err=%{public}s pts=%{public}lld",
+                                             sfr, eb, (long long)sendFrame->pts);
+                                failed = 21;
+                            }
+                            if (sfr == 0) {
+                                while (avcodec_receive_packet(venc, pkt) == 0) {
                                     if ((vpackets % 24) == 0) {
                                         OH_LOG_INFO(LOG_APP, "[vtrans] pkt=%{public}d pts=%{public}lld dts=%{public}lld size=%{public}d",
                                                     vpackets, (long long)pkt->pts, (long long)pkt->dts,
                                                     pkt->size);
                                     }
-                                    packets.push_back(op);
-                                    vpackets++;
-                                    av_packet_unref(pkt);
+                                    enqueueVideoPacket();
                                 }
                             }
                             if (filtered) av_frame_free(&filtered);
@@ -686,12 +1109,12 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                     av_packet_unref(pkt);
                 }
                 if (wmOk) {
-                    int eosRet = useImg ? img.SendEOS() : wm.SendEOS();
+                    int eosRet = img.SendEOS();
                     OH_LOG_INFO(LOG_APP, "[wm] EOS sent ret=%{public}d", eosRet);
                     int drained = 0;
                     while (true) {
                         AVFrame *of = av_frame_alloc();
-                        int r = useImg ? img.Receive(of) : wm.Receive(of);
+                        int r = img.Receive(of);
                         if (r < 0) {
                             OH_LOG_INFO(LOG_APP, "[wm] drain end r=%{public}d frames=%{public}d", r, drained);
                             av_frame_free(&of);
@@ -745,7 +1168,7 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
         // 手写 AVCC 极易在海思芯片上引发随机花屏，故采用 TS 中转 + FFmpeg 原生 remux。
         // ---- two-stage mux: AnnexB -> MPEG-TS -> MP4 remux ----
         if (!failed) {
-            if (MuxTsThenMp4(packets, venc, aenc, dstPath, container) != 0) failed = 11;
+            if (MuxTsThenMp4(packets, venc, aenc, dstPath, container, plan.speed) != 0) failed = 11;
         }
         if (out) {
             if (out->pb) avio_closep(&out->pb);

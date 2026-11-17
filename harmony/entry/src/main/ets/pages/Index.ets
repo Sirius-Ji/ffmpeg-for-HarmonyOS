@@ -214,6 +214,11 @@ struct Index {
         .value(this.resolution)
         .onSelect((index: number, value: string) => { this.resolution = value; })
 
+      Button('V0.3 组合测试')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.v03Test(); })
+
       Row({ space: 8 }) {
         Text(`音量 ${this.convertVolume.toFixed(2)}`).fontSize(12)
         Slider({ value: this.convertVolume, min: 0, max: 2, step: 0.05 })
@@ -599,6 +604,40 @@ struct Index {
       this.status = `M4.4 转码已启动: ${format} -> ${dst}`;
     } catch (e) {
       this.status = `格式转码异常: ${JSON.stringify(e)}`;
+    }
+  }
+
+  async v03Test(): Promise<void> {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('bbb_rabbit_30s.mp4');
+      const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
+      const logo = await this.ensureSample('logo.png');
+      const dst = `${ctx.filesDir}/v03_mix.mp4`;
+      const opts = '{"trimStart":5,"trimEnd":15,"cropW":640,"cropH":480,' +
+        '"brightness":0.08,"contrast":1.10,"saturation":1.15,' +
+        '"textX":"(w-tw)/2","textY":"(h-th)/2",' +
+        '"imageX":"W-w-20","imageY":"H-h-20",' +
+        '"rotate":45,"speed":1.25,"atempo":1.25,"freqShift":80,"echo":1}';
+      this.status = 'V0.3 组合测试中…';
+      FFmpegOhos.videoTranscode(src, dst,
+        `watermark|FFmpeg-ohos|center|48|white|${font}|100|1`,
+        '720p', 1.0, logo, opts);
+      for (let i = 0; i < 240; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
+        const s = JSON.parse(FFmpegOhos.videoTranscodeStatus().data) as Record<string, number>;
+        if (s.state === 2) {
+          this.status = `V0.3 完成 ${s.size} bytes`;
+          FFmpegOhos.videoPlay(dst, this.surfaceId, false, false);
+          return;
+        }
+        if (s.state === 3) {
+          this.status = `V0.3 失败 stage=${s.stage}`;
+          return;
+        }
+      }
+    } catch (e) {
+      this.status = `V0.3 异常: ${JSON.stringify(e)}`;
     }
   }
 
