@@ -4,7 +4,7 @@ import io
 import tarfile
 import zipfile
 
-VERSION = '0.3.1'
+VERSION = '0.3.2'
 ROOT = Path('.')
 OUT = ROOT / 'dist/release'
 OUT.mkdir(parents=True, exist_ok=True)
@@ -56,11 +56,6 @@ for lp in sorted((ROOT / 'LICENSES').iterdir()):
     if lp.is_file():
         data = read(lp)
         manifest.append('package/LICENSES/%s %d %s' % (lp.name, len(data), sha(data)))
-for rp in sorted((ROOT / 'RELINK').rglob('*')):
-    if rp.is_file():
-        data = read(rp)
-        rel = rp.relative_to(ROOT / 'RELINK').as_posix()
-        manifest.append('package/RELINK/%s %d %s' % (rel, len(data), sha(data)))
 man = ('\n'.join(manifest) + '\n').encode()
 har_out = OUT / ('ffmpeg_ohos-v%s.har' % VERSION)
 with tarfile.open(har_out, 'w:gz') as dst:
@@ -70,12 +65,6 @@ with tarfile.open(har_out, 'w:gz') as dst:
         if lp.is_file():
             data = read(lp)
             ti = tarfile.TarInfo('package/LICENSES/' + lp.name)
-            ti.size = len(data)
-            dst.addfile(ti, io.BytesIO(data))
-    for rp in sorted((ROOT / 'RELINK').rglob('*')):
-        if rp.is_file():
-            data = read(rp)
-            ti = tarfile.TarInfo('package/RELINK/' + rp.relative_to(ROOT / 'RELINK').as_posix())
             ti.size = len(data)
             dst.addfile(ti, io.BytesIO(data))
 

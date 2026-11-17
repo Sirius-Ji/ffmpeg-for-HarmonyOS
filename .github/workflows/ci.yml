@@ -10,7 +10,7 @@ jobs:
   source-checks:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout（需要 tags 做版本一致性检查）
+      - name: Checkout with tags
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -20,8 +20,13 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: 源码 / 文档 / 组件白名单一致性
+      - name: Resolve expected version
+        run: |
+          VERSION=$(python3 -c "import re; print(re.search(r\"HAR_VERSION = '([^']+)'\", open('harmony/ffmpeg_ohos/BuildProfile.ets', encoding='utf-8').read()).group(1))")
+          echo "RELEASE_TAG=v$VERSION" >> "$GITHUB_ENV"
+
+      - name: Source/doc/component consistency
         run: python3 build/check-release.py --source-only
 
-      - name: 脚本语法检查
+      - name: Script syntax check
         run: python3 -m py_compile build/check-release.py build/make-release.py

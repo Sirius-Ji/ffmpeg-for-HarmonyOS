@@ -1,9 +1,9 @@
 {
   "app": {
-    "bundleName": "com.example.ffmpegforharmony",
+    "bundleName": "com.siriusji.ffmpegohos",
     "vendor": "example",
-    "versionCode": 3000102,
-    "versionName": "0.3.1",
+    "versionCode": 3000003,
+    "versionName": "0.3.2",
     "icon": "$media:layered_image",
     "label": "$string:app_name"
   }

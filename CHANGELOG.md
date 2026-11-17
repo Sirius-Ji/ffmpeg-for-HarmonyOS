@@ -2,6 +2,20 @@
 
 所有值得注意的变更都记在这里。版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## v0.3.2（2026-11-17）
+
+### Changed
+
+- HAR 瘦身：移除 RELINK/，仅保留 LICENSES/；RELINK 仍在 SDK ZIP 和 per-ABI ZIP 中提供。
+- README 资产名改为带版本号的 `ffmpeg_ohos-v0.3.2.har`，避免复制脚本 404。
+- 合并重复许可：移除 `LGPL-2.1.txt` 与 `FreeType-LICENSE.txt`，统一使用 `FFmpeg-LGPL-2.1.txt` / `FreeType-FTL.txt`。
+- bundleName 改为 `com.siriusji.ffmpegohos`；versionCode 3000003。
+
+### Fixed
+
+- GitHub Actions `ci / source-checks` 的 YAML 解析错误：step 的 `name` 与 `run` 被挤在同一行。
+- CI 从 `BuildProfile.ets` 派生 `RELEASE_TAG`，不再依赖尚未推送的本地 tag。
+
 ## v0.3.1（2026-11-17）
 
 **Audit 修复版。** v0.3.0 初版存在对外接口契约缺失与打包不全：`Index.d.ts` 缺 7 参数/类型、`fontsDir` 大小写兼容缺失、HAR/SDK/per-ABI ZIP 漏 LICENSES 与 RELINK、SHA256SUMS 有幽灵条目、HAR 与 ZIP 二进制不一致。

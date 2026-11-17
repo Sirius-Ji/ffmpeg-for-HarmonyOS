@@ -82,7 +82,7 @@ def build_info(abi, lib_files):
     lines += [
         "",
         f"release_tag : {TAG}",
-        f"release_notes: v0.3.1 · 字幕/libass + VideoPlan/PiP + 变速时间轴 + 合规重链接材料。",
+        f"release_notes: v0.3.2 · 字幕/libass + VideoPlan/PiP + 变速时间轴 + 合规重链接材料。",
         "",
         "files:",
     ]
@@ -95,7 +95,7 @@ def build_info(abi, lib_files):
         "  * 运行时把同名 .so 放到 HAP 的 libs/<abi>/ 目录",
         "  * 页对齐 16KB（PT_LOAD align = 0x4000）",
         "  * CMake：list(APPEND CMAKE_PREFIX_PATH <解压目录>) 后 find_package(ffmpeg_ohos REQUIRED)",
-        "  * 许可证全文见 LICENSES/LGPL-2.1.txt，声明见 NOTICE.md",
+        "  * 许可证全文见 LICENSES/FFmpeg-LGPL-2.1.txt，声明见 NOTICE.md",
     ]
     return "\n".join(lines) + "\n"
 

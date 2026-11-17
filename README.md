@@ -1,11 +1,11 @@
 # ffmpeg-for-HarmonyOS
 
-> v0.3.1 保留 x86_64 编译产物与符号校验；当前版本未包含 x86_64 模拟器运行验收证据，待后续环境具备时补测。
+> v0.3.2 保留 x86_64 编译产物与符号校验；当前版本未包含 x86_64 模拟器运行验收证据，待后续环境具备时补测。
 
-> **v0.3.1 · M5.2 单一源构建**
+> **v0.3.2 · M5.2 单一源构建**
 >
-> 同时提供 ArkTS HAR（`ffmpeg_ohos.har`）和 C++ ZIP SDK
-> （`ffmpeg-ohos-sdk-v0.3.1.zip`，含 include/lib/CMake/BUILD-INFO/LICENSES）。
+> 同时提供 ArkTS HAR（`ffmpeg_ohos-v0.3.2.har`）和 C++ ZIP SDK
+> （`ffmpeg-ohos-sdk-v0.3.2.zip`，含 include/lib/CMake/BUILD-INFO/LICENSES）。
 > 全量强清重链，HAR 与 ZIP 均来自同一份 `prebuilt/<abi>` 字节。
 > 视频硬解、零拷贝渲染、文字/图片水印、音视频多格式转码均已真机验证。
 > **API 仍可能变更**，欢迎试用、集成、提 Issue 和 PR。
@@ -58,7 +58,7 @@ HAR 自带 `libentry.so` 与 FFmpeg 动态库，无需在 entry 再配置 `exter
 > 任一 SONAME 变更视为**破坏性更新**，需升级 major 版本；升级 FFmpeg
 > n10 或 zlib 主版本时必须重新核对整条 NEEDED 链。
 
-## 🚀 v0.3.1 更新亮点
+## 🚀 v0.3.2 更新亮点
 
 - libass 字幕：SRT / ASS / WebVTT，`subtitlePath/fontsDir` + `fontsdir` + `force_style`。
 - VideoPlan 视频链：trim/crop/color、任意坐标水印、图片旋转、2–6s PiP。
@@ -323,7 +323,7 @@ prebuilt/<abi>/
 - FFmpeg 以 **LGPL-2.1-or-later** 分发；本项目编译时未开 `--enable-gpl` / `--enable-nonfree` / `--enable-version3`，
   产物里没有 x264/x265 等 GPL 组件。`configure` 输出可自证：`License: LGPL version 2.1 or later`。
 - 产物是**动态库**，应用动态链接即可满足 LGPL-2.1 §6(b) 的"共享库机制"路径；闭源商用不需要公开自己的代码。
-- 分发二进制时请附上 [LICENSES/LGPL-2.1.txt](LICENSES/LGPL-2.1.txt) 与 [NOTICE.md](NOTICE.md)，并提供 FFmpeg 源码获取方式。
+- 分发二进制时请附上 [LICENSES/FFmpeg-LGPL-2.1.txt](LICENSES/FFmpeg-LGPL-2.1.txt) 与 [NOTICE.md](NOTICE.md)，并提供 FFmpeg 源码获取方式。
 - **专利与许可分开算**：AAC / MP3 / Opus 等编解码专利池授权与 LGPL 无关，商用请自行评估。
 - `libmp3lame`（LAME 3.100）同样是 **LGPL-2.1**，以动态库形式随包发布，源码获取方式见 [NOTICE.md](NOTICE.md)。
 

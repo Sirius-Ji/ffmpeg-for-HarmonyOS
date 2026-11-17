@@ -134,7 +134,7 @@ def check_zip(abi, failures):
         if hdr not in names:
             failures.append(f"[{abi}] 包里缺头文件: {hdr}")
 
-    for meta in ("NOTICE.md", "LICENSES/LGPL-2.1.txt", "BUILD-INFO.txt",
+    for meta in ("NOTICE.md", "LICENSES/FFmpeg-LGPL-2.1.txt", "BUILD-INFO.txt",
                  "lib/cmake/ffmpeg_ohos/ffmpeg-ohos-config.cmake",
                  "lib/cmake/ffmpeg_ohos/ffmpeg_ohos-config.cmake"):
         if meta not in names:
@@ -324,7 +324,7 @@ def check_source_consistency(failures):
 
 def check_source_files(failures):
     required = [
-        "README.md", "CHANGELOG.md", "NOTICE.md", "LICENSES/LGPL-2.1.txt",
+        "README.md", "CHANGELOG.md", "NOTICE.md", "LICENSES/FFmpeg-LGPL-2.1.txt",
         "build/build-ffmpeg.sh", "build/make-release.py", "build/check-release.py",
         "build/ffmpeg-ohos-config.cmake", "build/ffmpeg_ohos-config.cmake",
         ".github/workflows/ci.yml",

@@ -9,7 +9,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / 'dist/release'
-VERSION = '0.3.1'
+VERSION = '0.3.2'
 WHITELIST = {
     'libc.so', 'libm.so', 'libdl.so', 'libpthread.so', 'librt.so',
     'libace_napi.z.so', 'libhilog_ndk.z.so', 'libohaudio.so',
