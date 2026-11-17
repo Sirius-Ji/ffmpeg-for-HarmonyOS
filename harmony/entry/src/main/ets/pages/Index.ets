@@ -612,17 +612,18 @@ struct Index {
       const ctx = getContext(this) as common.UIAbilityContext;
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
-      const logo = await this.ensureSample('logo.png');
+      const logo = await this.ensureSample('logo_triangle.png');
       const dst = `${ctx.filesDir}/v03_mix.mp4`;
       const opts = '{"trimStart":5,"trimEnd":15,"cropW":640,"cropH":480,' +
         '"brightness":0.08,"contrast":1.10,"saturation":1.15,' +
         '"textX":"(w-tw)/2","textY":"(h-th)/2",' +
         '"imageX":"W-w-20","imageY":"H-h-20",' +
+        '"pipPath":"' + src + '","pipEnableStart":2,"pipEnableEnd":6,' +
         '"rotate":45,"speed":1.25,"atempo":1.25,"freqShift":80,"echo":1}';
       this.status = 'V0.3 组合测试中…';
       FFmpegOhos.videoTranscode(src, dst,
         `watermark|FFmpeg-ohos|center|48|white|${font}|100|1`,
-        '720p', 1.0, logo, opts);
+        '720p', 1.0, '', opts);
       for (let i = 0; i < 240; i++) {
         await new Promise<void>((resolve) => setTimeout(resolve, 500));
         const s = JSON.parse(FFmpegOhos.videoTranscodeStatus().data) as Record<string, number>;
@@ -646,7 +647,7 @@ struct Index {
       const ctx = getContext(this) as common.UIAbilityContext;
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
-      const logo = await this.ensureSample('logo.png');
+      const logo = await this.ensureSample('logo_triangle.png');
       const pr: NapiResult = FFmpegOhos.imageProbe(logo);
       this.status = `LOGO ${pr.data}`;
       const dst = `${ctx.filesDir}/watermark.mp4`;

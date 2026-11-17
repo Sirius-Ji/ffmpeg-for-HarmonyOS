@@ -142,6 +142,9 @@ struct VideoPlan {
     double audioTempo = 1.0;
     int freqShift = 0;
     bool echo = false;
+    std::string pipPath;
+    double pipEnableStart = 2.0;
+    double pipEnableEnd = 6.0;
 };
 
 static bool HasJsonKey(const std::string &j, const char *key) {
@@ -197,6 +200,9 @@ static VideoPlan ParseVideoPlan(const std::string &j) {
     if (p.audioTempo > 4.0) p.audioTempo = 4.0;
     p.freqShift = (int)JsonNum(j, "freqShift", 0);
     p.echo = HasJsonKey(j, "echo") && JsonNum(j, "echo", 0) != 0;
+    p.pipPath = JsonStr(j, "pipPath", "");
+    p.pipEnableStart = JsonNum(j, "pipEnableStart", 2.0);
+    p.pipEnableEnd = JsonNum(j, "pipEnableEnd", 6.0);
     return p;
 }
 
@@ -308,91 +314,86 @@ private:
     bool ready_ = false;
 };
 
-class WatermarkFilter {
+class PipVideo {
 public:
-    ~WatermarkFilter() { if (graph_) avfilter_graph_free(&graph_); }
-    bool Init(const std::string &text, const std::string &position, int fontSize,
-              const std::string &colorIn, const std::string &fontPath, int alpha, bool bold,
-              int inW, int inH, int outW, int outH, AVRational tb) {
-        graph_ = avfilter_graph_alloc();
-        if (!graph_) return false;
-        const AVFilter *scaleFilter = avfilter_get_by_name("scale");
-        OH_LOG_INFO(LOG_APP, "[wm] scale_filter=%{public}p in=%{public}dx%{public}d out=%{public}dx%{public}d",
-                    scaleFilter, inW, inH, outW, outH);
-        if (!scaleFilter) return false;
-        char args[256];
-        snprintf(args, sizeof(args),
-                 "video_size=%dx%d:pix_fmt=nv12:time_base=%d/%d:pixel_aspect=1/1",
-                 inW, inH, tb.num, tb.den);
-        if (avfilter_graph_create_filter(&src_, avfilter_get_by_name("buffer"), "in",
-                                         args, nullptr, graph_) < 0) return false;
-        if (avfilter_graph_create_filter(&sink_, avfilter_get_by_name("buffersink"), "out",
-                                         nullptr, nullptr, graph_) < 0) return false;
-        char scaleArgs[64];
-        snprintf(scaleArgs, sizeof(scaleArgs), "w=%d:h=%d", outW, outH);
-        int sr = avfilter_graph_create_filter(&scale_, scaleFilter, "scale",
-                                              scaleArgs, nullptr, graph_);
-        OH_LOG_INFO(LOG_APP, "[wm] create scale rc=%{public}d args=%{public}s", sr, scaleArgs);
-        if (sr < 0) return false;
-        std::string x = "24", y = "24";
-        if (position == "top-right") { x = "w-tw-24"; }
-        else if (position == "bottom-left") { y = "h-th-24"; }
-        else if (position == "bottom-right") { x = "w-tw-24"; y = "h-th-24"; }
-        else if (position == "center") { x = "(w-tw)/2"; y = "(h-th)/2"; }
-        char color[128];
-        if (alpha < 100) {
-            snprintf(color, sizeof(color), "%s@%.2f", colorIn.c_str(), alpha / 100.0);
-        } else {
-            snprintf(color, sizeof(color), "%s", colorIn.c_str());
-        }
-        const char *border = bold ? ":borderw=2:bordercolor=black" : "";
-        char dt[2048];
-        snprintf(dt, sizeof(dt),
-                 "fontfile=%s:text='%s':x=%s:y=%s:fontsize=%d:fontcolor=%s%s",
-                 fontPath.c_str(), EscapeText(text).c_str(), x.c_str(), y.c_str(),
-                 fontSize, color, border);
-        if (avfilter_graph_create_filter(&draw_, avfilter_get_by_name("drawtext"), "draw",
-                                         dt, nullptr, graph_) < 0) return false;
-        if (avfilter_graph_create_filter(&fmt_, avfilter_get_by_name("format"), "fmt",
-                                         "pix_fmts=nv12", nullptr, graph_) < 0) return false;
-        if (avfilter_link(src_, 0, scale_, 0) < 0 || avfilter_link(scale_, 0, draw_, 0) < 0 ||
-            avfilter_link(draw_, 0, fmt_, 0) < 0 ||
-            avfilter_link(fmt_, 0, sink_, 0) < 0) return false;
-        if (avfilter_graph_config(graph_, nullptr) < 0) {
-            OH_LOG_ERROR(LOG_APP, "[wm] graph_config failed");
-            return false;
-        }
-        OH_LOG_INFO(LOG_APP, "[wm] graph OK buffer->scale->drawtext->format->sink");
-        ready_ = true;
-        return true;
+    ~PipVideo() {
+        if (pkt) av_packet_free(&pkt);
+        if (rgba) av_frame_free(&rgba);
+        if (frame) av_frame_free(&frame);
+        if (sws) sws_freeContext(sws);
+        if (dec) avcodec_free_context(&dec);
+        if (fmt) avformat_close_input(&fmt);
     }
-    int Run(AVFrame *in, AVFrame *out) {
-        if (!ready_) return -1;
-        int ret = av_buffersrc_add_frame_flags(src_, in, AV_BUFFERSRC_FLAG_KEEP_REF);
-        if (ret < 0) {
-            OH_LOG_ERROR(LOG_APP, "[wm] buffersrc_add failed ret=%{public}d in=%{public}dx%{public}d",
-                         ret, in->width, in->height);
-            return ret;
+    bool Open(const std::string &path) {
+        if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) != 0) return false;
+        if (avformat_find_stream_info(fmt, nullptr) < 0) return false;
+        vidx = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+        if (vidx < 0) return false;
+        const AVCodec *c = avcodec_find_decoder(fmt->streams[vidx]->codecpar->codec_id);
+        if (!c) return false;
+        dec = avcodec_alloc_context3(c);
+        if (!dec || avcodec_parameters_to_context(dec, fmt->streams[vidx]->codecpar) < 0 ||
+            avcodec_open2(dec, c, nullptr) < 0) return false;
+        pipW = dec->width;
+        pipH = dec->height;
+        frame = av_frame_alloc();
+        rgba = av_frame_alloc();
+        pkt = av_packet_alloc();
+        return frame && rgba && pkt;
+    }
+    int Next(AVFrame **out) {
+        while (!eof) {
+            int rr = av_read_frame(fmt, pkt);
+            if (rr < 0) { eof = true; break; }
+            if (pkt->stream_index != vidx) { av_packet_unref(pkt); continue; }
+            int sr = avcodec_send_packet(dec, pkt);
+            av_packet_unref(pkt);
+            if (sr < 0 && sr != AVERROR(EAGAIN)) continue;
+            while (avcodec_receive_frame(dec, frame) == 0) {
+                if (!rgba->data[0]) {
+                    rgba->format = AV_PIX_FMT_RGBA;
+                    rgba->width = frame->width;
+                    rgba->height = frame->height;
+                    if (av_frame_get_buffer(rgba, 32) < 0) return -1;
+                    sws = sws_getContext(frame->width, frame->height, (AVPixelFormat)frame->format,
+                                         frame->width, frame->height, AV_PIX_FMT_RGBA,
+                                         SWS_BILINEAR, nullptr, nullptr, nullptr);
+                    if (!sws) return -1;
+                }
+                sws_scale(sws, frame->data, frame->linesize, 0, frame->height,
+                          rgba->data, rgba->linesize);
+                rgba->pts = frame->pts;
+                *out = rgba;
+                return 1;
+            }
         }
-        ret = av_buffersink_get_frame(sink_, out);
-        if (ret < 0) {
-            OH_LOG_ERROR(LOG_APP, "[wm] buffersink_get failed ret=%{public}d", ret);
-            return ret;
+        if (eof && !flushed) {
+            flushed = true;
+            avcodec_send_packet(dec, nullptr);
+            if (avcodec_receive_frame(dec, frame) == 0) {
+                if (!rgba->data[0]) return 0;
+                sws_scale(sws, frame->data, frame->linesize, 0, frame->height,
+                          rgba->data, rgba->linesize);
+                rgba->pts = frame->pts;
+                *out = rgba;
+                return 1;
+            }
         }
-        OH_LOG_INFO(LOG_APP, "[wm] frame out=%{public}dx%{public}d", out->width, out->height);
-        return ret;
+        return 0;
     }
-    int SendEOS() {
-        return av_buffersrc_add_frame_flags(src_, nullptr, 0);
-    }
-    int Receive(AVFrame *out) {
-        return av_buffersink_get_frame(sink_, out);
-    }
+    int Width() const { return pipW; }
+    int Height() const { return pipH; }
 private:
-    AVFilterGraph *graph_ = nullptr;
-    AVFilterContext *src_ = nullptr, *sink_ = nullptr, *scale_ = nullptr, *draw_ = nullptr, *fmt_ = nullptr;
-    bool ready_ = false;
+    int pipW = 0, pipH = 0;
+    AVFormatContext *fmt = nullptr;
+    AVCodecContext *dec = nullptr;
+    SwsContext *sws = nullptr;
+    AVFrame *frame = nullptr, *rgba = nullptr;
+    AVPacket *pkt = nullptr;
+    int vidx = -1;
+    bool eof = false, flushed = false;
 };
+
 class ImageOverlayFilter {
 public:
     ~ImageOverlayFilter() {
@@ -492,10 +493,22 @@ public:
         }
 
         if (hasLogo) {
-            char oa[192];
-            snprintf(oa, sizeof(oa), "x=%s:y=%s:eof_action=repeat:repeatlast=1", plan.imageX.c_str(), plan.imageY.c_str());
+            char oa[256];
+            if (!plan.pipPath.empty()) {
+                snprintf(oa, sizeof(oa), "x=W-w-24:y=H-h-24:enable=between(t,%.3f,%.3f)",
+                         plan.pipEnableStart, plan.pipEnableEnd);
+            } else {
+                snprintf(oa, sizeof(oa), "x=%s:y=%s", plan.imageX.c_str(), plan.imageY.c_str());
+            }
             if (!add(&overlay_, "overlay", oa)) return false;
-            if (avfilter_link(logo_, 0, overlay_, 1) < 0) return false;
+            AVFilterContext *logoOut = logo_;
+            if (!plan.pipPath.empty()) {
+                if (avfilter_graph_create_filter(&logoScale_, avfilter_get_by_name("scale"), "pip_scale",
+                                                 "w=320:h=180", nullptr, graph_) < 0) return false;
+                if (avfilter_link(logo_, 0, logoScale_, 0) < 0) return false;
+                logoOut = logoScale_;
+            }
+            if (avfilter_link(logoOut, 0, overlay_, 1) < 0) return false;
         }
 
         char dt[512];
@@ -528,7 +541,7 @@ public:
         if (logoFrame_) {
             AVFrame *lf = av_frame_clone(logoFrame_);
             if (!lf) return AVERROR(ENOMEM);
-            lf->pts = logoPts_++;
+            lf->pts = in->pts;
             int lr = av_buffersrc_add_frame_flags(logo_, lf, AV_BUFFERSRC_FLAG_KEEP_REF);
             av_frame_free(&lf);
             if (lr < 0) return lr;
@@ -536,11 +549,6 @@ public:
         int r = av_buffersrc_add_frame_flags(main_, in, AV_BUFFERSRC_FLAG_KEEP_REF);
         if (r < 0) return r;
         int sr = av_buffersink_get_frame(sink_, out);
-        if (runCount_ < 8 || sr == AVERROR_EOF) {
-            OH_LOG_INFO(LOG_APP, "[plan] sink ret=%{public}d inpts=%{public}lld run=%{public}d",
-                        sr, (long long)in->pts, runCount_);
-        }
-        runCount_++;
         return sr;
     }
     int SendEOS() { return av_buffersrc_add_frame_flags(main_, nullptr, 0); }
@@ -548,8 +556,7 @@ public:
 private:
     AVFilterGraph *graph_ = nullptr;
     AVFilterContext *main_ = nullptr, *logo_ = nullptr, *overlay_ = nullptr, *scale_ = nullptr, *draw_ = nullptr, *fmt_ = nullptr, *sink_ = nullptr;
-    AVFilterContext *trim_ = nullptr, *setpts_ = nullptr, *crop_ = nullptr, *hue_ = nullptr, *levels_ = nullptr, *temp_ = nullptr, *rotate_ = nullptr, *logoFmt_ = nullptr;
-    int runCount_ = 0;
+    AVFilterContext *trim_ = nullptr, *setpts_ = nullptr, *crop_ = nullptr, *hue_ = nullptr, *levels_ = nullptr, *temp_ = nullptr, *rotate_ = nullptr, *logoFmt_ = nullptr, *logoScale_ = nullptr;
     AVFrame *logoFrame_ = nullptr;
     int64_t logoPts_ = 0;
     bool ready_ = false;
@@ -998,8 +1005,15 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                     else { plan.textX = "24"; plan.textY = "24"; }
                 }
                 ImageOverlayFilter img;
+                PipVideo pip;
+                bool pipOk = false;
+                if (!plan.pipPath.empty()) {
+                    pipOk = pip.Open(plan.pipPath);
+                    OH_LOG_INFO(LOG_APP, "[vtrans] pip open=%{public}d path=%{public}s size=%{public}dx%{public}d",
+                                pipOk ? 1 : 0, plan.pipPath.c_str(), pip.Width(), pip.Height());
+                }
                 AVFrame *logoFrame = nullptr;
-                if (!imagePath.empty()) {
+                if (!pipOk && !imagePath.empty()) {
                     std::string imgErr;
                     logoFrame = LoadImageToFrame(imagePath, &imgErr);
                     if (logoFrame && plan.rotate != 0) {
@@ -1008,14 +1022,14 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                     }
                     if (!logoFrame) OH_LOG_ERROR(LOG_APP, "[overlay] image load failed: %{public}s", imgErr.c_str());
                 }
-                const bool useGraph = watermark || logoFrame != nullptr;
+                const bool useGraph = watermark || logoFrame != nullptr || pipOk;
                 bool wmOk = false;
                 if (useGraph) {
                     wmOk = img.Init(inW, inH, outW, outH,
-                                    logoFrame ? logoFrame->width : 0,
-                                    logoFrame ? logoFrame->height : 0,
-                                    fontPath, wmText, srcRate, plan);
-                    if (wmOk && logoFrame) wmOk = img.SendLogo(logoFrame) >= 0;
+                                    pipOk ? pip.Width() : (logoFrame ? logoFrame->width : 0),
+                                    pipOk ? pip.Height() : (logoFrame ? logoFrame->height : 0),
+                                    fontPath, wmText, AVRational{1, 1000}, plan);
+                    if (wmOk && logoFrame && !pipOk) wmOk = img.SendLogo(logoFrame) >= 0;
                 }
                 if (logoFrame) av_frame_free(&logoFrame);
                 OH_LOG_INFO(LOG_APP, "[vtrans] image=%{public}d text=%{public}d usePlan=%{public}d rotate=%{public}d",
@@ -1053,9 +1067,17 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                                 if (nv->pts < trimStartPts || nv->pts >= trimEndPts) continue;
                                 nv->pts -= trimStartPts;
                             }
+                            nv->pts = (int64_t)(nv->pts * 1000.0 * srcRate.den / srcRate.num + 0.5);
                             AVFrame *filtered = nullptr;
                             AVFrame *sendFrame = nv;
                             if (wmOk) {
+                                if (pipOk) {
+                                    AVFrame *pf = nullptr;
+                                    if (pip.Next(&pf) > 0) {
+                                        pf->pts = nv->pts;
+                                        img.SendLogo(pf);
+                                    }
+                                }
                                 filtered = av_frame_alloc();
                                 int fr = filtered ? img.Run(nv, filtered) : -1;
                                 if (fr == 0) {
@@ -1070,20 +1092,12 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                                 }
                             }
                             if (sendFrame) sendFrame->pts = sendPts;
-                            if (sendPts < 5 || sendPts >= 235) {
-                                OH_LOG_INFO(LOG_APP, "[plan] send#%{public}lld pts=%{public}lld tb=%{public}d/%{public}d fps=%{public}d/%{public}d",
-                                            (long long)sendPts, (long long)sendFrame->pts,
-                                            venc->time_base.num, venc->time_base.den,
-                                            venc->framerate.num, venc->framerate.den);
-                            }
                             sendPts++;
                             int sfr;
                             for (;;) {
                                 sfr = avcodec_send_frame(venc, sendFrame);
                                 if (sfr != AVERROR(EAGAIN)) break;
                                 while (avcodec_receive_packet(venc, pkt) == 0) {
-                                    OH_LOG_INFO(LOG_APP, "[plan] drain pkt pts=%{public}lld dts=%{public}lld",
-                                                (long long)pkt->pts, (long long)pkt->dts);
                                     enqueueVideoPacket();
                                 }
                             }
@@ -1095,11 +1109,6 @@ int VideoTranscode(const std::string &srcPath, const std::string &dstPath,
                             }
                             if (sfr == 0) {
                                 while (avcodec_receive_packet(venc, pkt) == 0) {
-                                    if ((vpackets % 24) == 0) {
-                                        OH_LOG_INFO(LOG_APP, "[vtrans] pkt=%{public}d pts=%{public}lld dts=%{public}lld size=%{public}d",
-                                                    vpackets, (long long)pkt->pts, (long long)pkt->dts,
-                                                    pkt->size);
-                                    }
                                     enqueueVideoPacket();
                                 }
                             }
