@@ -419,6 +419,8 @@ public:
                     inW, inH, outW, outH, hasLogo ? 1 : 0, plan.trim ? 1 : 0,
                     plan.crop ? 1 : 0, plan.color ? 1 : 0, plan.rotate, plan.speed,
                     plan.textX.c_str(), plan.textY.c_str());
+        OH_LOG_INFO(LOG_APP, "[plan] graph=main(buffer tb=%{public}d/%{public}d) -> C++trim(no setpts) -> crop/scale/color -> overlay -> subtitles -> drawtext -> format; speed compressed only at mux",
+                    tb.num, tb.den);
         if (avfilter_graph_create_filter(&main_, avfilter_get_by_name("buffer"), "main", mainArgs, nullptr, graph_) < 0) {
             OH_LOG_ERROR(LOG_APP, "[plan] create main buffer failed");
             return false;

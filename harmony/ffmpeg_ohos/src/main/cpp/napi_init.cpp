@@ -387,6 +387,8 @@ napi_value VideoTranscodeToMp4Fn(napi_env env, napi_callback_info info) {
     if (volume > 2.0) volume = 2.0;
     const std::string imagePath = argc >= 6 ? GetString(env, argv[5]) : "";
     const std::string optionsJson = argc >= 7 ? GetString(env, argv[6]) : "";
+    OH_LOG_INFO(LOG_APP, "[napi] videoTranscode enter image=%{public}d options=%{public}d",
+                (int)imagePath.size(), (int)optionsJson.size());
     std::thread([src, dst, format, resolution, volume, imagePath, optionsJson]() {
         std::string json;
         VideoTranscode(src, dst, format, resolution, (float)volume, imagePath, optionsJson, &json);

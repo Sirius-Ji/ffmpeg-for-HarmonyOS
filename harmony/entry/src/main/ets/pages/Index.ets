@@ -242,6 +242,11 @@ struct Index {
         .enabled(!this.busy)
         .onClick(() => { this.subtitleTest(true); })
 
+      Button('ASS 1.0 对照')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.subtitleTest(true, 1.0); })
+
       Row({ space: 8 }) {
         Text(`音量 ${this.convertVolume.toFixed(2)}`).fontSize(12)
         Slider({ value: this.convertVolume, min: 0, max: 2, step: 0.05 })
@@ -630,14 +635,15 @@ struct Index {
     }
   }
 
-  async subtitleTest(ass: boolean = false): Promise<void> {
+  async subtitleTest(ass: boolean = false, speed: number = 1.25): Promise<void> {
     try {
+      console.info(`[ui] subtitleTest ass=${ass} speed=${speed}`);
       const ctx = getContext(this) as common.UIAbilityContext;
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
       const subName = ass ? 'subs_audit2.ass' : 'subs_force.srt';
       await this.ensureSample(subName);
-      const dst = `${ctx.filesDir}/${ass ? 'audit_ass.mp4' : 'audit_srt.mp4'}`;
+      const dst = `${ctx.filesDir}/${ass ? 'audit_ass' : 'audit_srt'}${speed === 1 ? '_1x' : ''}.mp4`;
       const subPath = this.subtitlePath.length > 0 ? this.subtitlePath : `${ctx.filesDir}/${subName}`;
       const fonts = this.fontsDir.length > 0 ? this.fontsDir : ctx.filesDir;
       const style = ass ? '' : 'FontName=Source Han Sans CN,FontSize=24,PrimaryColour=&H00FFFFFF&,Outline=1';
@@ -647,7 +653,7 @@ struct Index {
         '"pipPath":"' + src + '","pipEnableStart":2,"pipEnableEnd":6,' +
         '"subtitlePath":"' + subPath + '","fontsDir":"' + fonts + '",' +
         '"subtitleStyle":"' + style + '",' +
-        '"speed":1.25,"atempo":1.25}';
+        '"speed":' + speed.toString() + ',"atempo":' + speed.toString() + '}';
       this.status = '字幕审计中…';
       FFmpegOhos.videoTranscode(src, dst,
         `watermark|FFmpeg-ohos|center|48|white|${font}|100|1`,
