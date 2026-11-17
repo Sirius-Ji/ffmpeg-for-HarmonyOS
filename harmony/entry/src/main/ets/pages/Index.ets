@@ -262,6 +262,16 @@ struct Index {
         .enabled(!this.busy)
         .onClick(() => { this.subtitleTest(true, 0.5); })
 
+      Button('层级重叠')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.layerTest(); })
+
+      Button('降级三组')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.degradeBatch(); })
+
       Row({ space: 8 }) {
         Text(`音量 ${this.convertVolume.toFixed(2)}`).fontSize(12)
         Slider({ value: this.convertVolume, min: 0, max: 2, step: 0.05 })
@@ -694,6 +704,62 @@ struct Index {
     } catch (e) {
       this.status = `B 四组异常: ${JSON.stringify(e)}`;
     }
+  }
+
+  async layerTest(): Promise<void> {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('bbb_rabbit_30s.mp4');
+      const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
+      await this.ensureSample('subs_audit2.ass');
+      const dst = `${ctx.filesDir}/audit_layer.mp4`;
+      const opts = '{"trimStart":5,"trimEnd":15,' +
+        '"textX":"(w-tw)/2","textY":"(h-th)/2",' +
+        '"pipPath":"' + src + '","pipEnableStart":2,"pipEnableEnd":6,' +
+        '"pipX":"(W-w)/2","pipY":"(H-h)/2",' +
+        '"subtitlePath":"' + ctx.filesDir + '/subs_audit2.ass",' +
+        '"fontsDir":"' + ctx.filesDir + '","speed":1.0,"atempo":1.0}';
+      this.status = '层级重叠测试中…';
+      FFmpegOhos.videoTranscode(src, dst,
+        `watermark|DRAWTEXT|center|48|white|${font}|100|1`,
+        '720p', 1.0, '', opts);
+      for (let i = 0; i < 240; i++) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
+        const s = JSON.parse(FFmpegOhos.videoTranscodeStatus().data) as Record<string, number>;
+        if (s.state === 2) { this.status = '层级重叠完成'; return; }
+        if (s.state === 3) { this.status = `层级重叠失败 ${s.stage}`; return; }
+      }
+    } catch (e) { this.status = `层级异常: ${JSON.stringify(e)}`; }
+  }
+
+  async degradeBatch(): Promise<void> {
+    const modes = ['missing', 'empty_fonts', 'bad_font'];
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const src = await this.ensureSample('bbb_rabbit_30s.mp4');
+      const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
+      await this.ensureSample('subs_force.srt');
+      for (let m = 0; m < modes.length; m++) {
+        const mode = modes[m];
+        const subPath = mode === 'missing' ? `${ctx.filesDir}/no_such.srt` : `${ctx.filesDir}/subs_force.srt`;
+        const fonts = mode === 'empty_fonts' ? '' : ctx.filesDir;
+        const style = mode === 'bad_font' ? 'FontName=NoSuchFontXYZ' : '';
+        const dst = `${ctx.filesDir}/degrade_${mode}.mp4`;
+        const opts = '{"trimStart":5,"trimEnd":15,"textX":"20","textY":"20",' +
+          '"subtitlePath":"' + subPath + '","fontsDir":"' + fonts + '",' +
+          '"subtitleStyle":"' + style + '","speed":1.0,"atempo":1.0}';
+        this.status = `降级测试 ${mode}…`;
+        FFmpegOhos.videoTranscode(src, dst,
+          `watermark|FFmpeg-ohos|center|48|white|${font}|100|1`, '720p', 1.0, '', opts);
+        for (let i = 0; i < 240; i++) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 500));
+          const s = JSON.parse(FFmpegOhos.videoTranscodeStatus().data) as Record<string, number>;
+          if (s.state === 2) break;
+          if (s.state === 3) { this.status = `降级 ${mode} 失败`; return; }
+        }
+      }
+      this.status = '降级三组完成';
+    } catch (e) { this.status = `降级异常: ${JSON.stringify(e)}`; }
   }
 
   async subtitleTest(ass: boolean = false, speed: number = 1.25, trimStart: number = 5): Promise<void> {
