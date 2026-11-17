@@ -235,7 +235,7 @@ struct Index {
       Button('SRT force 审计')
         .fontSize(13)
         .enabled(!this.busy)
-        .onClick(() => { this.subtitleTest(); })
+        .onClick(() => { this.subtitleTest(false, 1.0); })
 
       Button('ASS Style 审计')
         .fontSize(13)
@@ -246,6 +246,11 @@ struct Index {
         .fontSize(13)
         .enabled(!this.busy)
         .onClick(() => { this.subtitleTest(true, 1.0); })
+
+      Button('trim12.5 审计')
+        .fontSize(13)
+        .enabled(!this.busy)
+        .onClick(() => { this.subtitleTest(true, 1.25, 12.5); })
 
       Row({ space: 8 }) {
         Text(`音量 ${this.convertVolume.toFixed(2)}`).fontSize(12)
@@ -635,19 +640,21 @@ struct Index {
     }
   }
 
-  async subtitleTest(ass: boolean = false, speed: number = 1.25): Promise<void> {
+  async subtitleTest(ass: boolean = false, speed: number = 1.25, trimStart: number = 5): Promise<void> {
     try {
-      console.info(`[ui] subtitleTest ass=${ass} speed=${speed}`);
+      hilog.info(0x0000, 'FFM1', '[ui] subtitleTest ass=%{public}d speed=%{public}s trim=%{public}s',
+        ass ? 1 : 0, speed.toFixed(2), trimStart.toFixed(1));
+      console.info(`[ui] subtitleTest ass=${ass} speed=${speed} trim=${trimStart}`);
       const ctx = getContext(this) as common.UIAbilityContext;
       const src = await this.ensureSample('bbb_rabbit_30s.mp4');
       const font = await this.ensureSample('SourceHanSansCN-Regular.otf');
       const subName = ass ? 'subs_audit2.ass' : 'subs_force.srt';
       await this.ensureSample(subName);
-      const dst = `${ctx.filesDir}/${ass ? 'audit_ass' : 'audit_srt'}${speed === 1 ? '_1x' : ''}.mp4`;
+      const dst = `${ctx.filesDir}/${ass ? 'audit_ass' : 'audit_srt'}${speed === 1 ? '_1x' : ''}${trimStart !== 5 ? '_trim' : ''}.mp4`;
       const subPath = this.subtitlePath.length > 0 ? this.subtitlePath : `${ctx.filesDir}/${subName}`;
       const fonts = this.fontsDir.length > 0 ? this.fontsDir : ctx.filesDir;
       const style = ass ? '' : 'FontName=Source Han Sans CN,FontSize=24,PrimaryColour=&H00FFFFFF&,Outline=1';
-      const opts = '{"trimStart":5,"trimEnd":15,' +
+      const opts = '{"trimStart":' + trimStart.toString() + ',"trimEnd":' + (trimStart + 10).toString() + ',' +
         '"brightness":0.08,"contrast":1.10,"saturation":1.15,' +
         '"textX":"20","textY":"20",' +
         '"pipPath":"' + src + '","pipEnableStart":2,"pipEnableEnd":6,' +
